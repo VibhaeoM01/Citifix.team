@@ -18,7 +18,7 @@ router.post(
   authenticateToken,
   upload.single('photo'),
   [
-    body('description').trim().isLength({ min: 10, max: 1000 }).withMessage('Description must be between 10 and 1000 characters'),
+    body('description').trim().optional(),
     body('location').trim().notEmpty().withMessage('Location is required')
   ],
   complaintsController.submitComplaint

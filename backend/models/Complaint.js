@@ -38,7 +38,7 @@ const complaintSchema = new mongoose.Schema({
       'Parks & Recreation',
       'Noise Pollution',
       'Air Pollution',
-      'Waste Management',
+      'Sanitation',
       'Traffic Management',
       'Public Safety',
       'Healthcare',

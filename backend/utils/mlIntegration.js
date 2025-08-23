@@ -3,16 +3,16 @@ const FormData = require('form-data');
 const fs = require('fs');
 
 // ML API configuration
-const ML_API_BASE_URL = process.env.ML_API_URL || 'http://localhost:5000';
+const ML_API_BASE_URL = process.env.ML_API_URL || 'http://localhost:5002';
 
 // Call ML API for image analysis
 const callMLAPI = async (imagePath, description) => {
   try {
     const formData = new FormData();
-    formData.append('image', fs.createReadStream(imagePath));
-    formData.append('description', description);
+    formData.append('file', fs.createReadStream(imagePath));
+    if (description) formData.append('description', description);
 
-    const response = await axios.post(`${ML_API_BASE_URL}/analyze`, formData, {
+    const response = await axios.post(`${ML_API_BASE_URL}/predict`, formData, {
       headers: {
         ...formData.getHeaders(),
       },
@@ -20,11 +20,13 @@ const callMLAPI = async (imagePath, description) => {
     });
 
     if (response.status === 200) {
+      const { predicted_class, confidence, category, priority, caption } = response.data;
       return {
-        caption: response.data.caption || 'No caption generated',
-        predictedCategory: response.data.category || 'Other',
-        predictedUrgency: response.data.urgency || 'medium',
-        confidence: response.data.confidence || 0.5
+        caption: caption || 'No caption generated',
+        predictedCategory: category || 'Other',
+        predictedUrgency: priority || 'medium',
+        confidence: confidence || 0.5,
+        detectedClass: predicted_class
       };
     } else {
       throw new Error('ML API returned non-200 status');
@@ -62,7 +64,7 @@ const analyzeDescription = (description) => {
   } else if (text.includes('air') || text.includes('pollution') || text.includes('smoke')) {
     category = 'Air Pollution';
   } else if (text.includes('waste') || text.includes('garbage') || text.includes('trash')) {
-    category = 'Waste Management';
+    category = 'Sanitation';
   } else if (text.includes('traffic') || text.includes('congestion')) {
     category = 'Traffic Management';
   } else if (text.includes('safety') || text.includes('security') || text.includes('crime')) {

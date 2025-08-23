@@ -37,6 +37,7 @@ function AppRoutes() {
           path="/complaint" 
           element={
             <ProtectedRoute>
+              {console.log('Rendering ComplaintForm')}
               <ComplaintForm />
             </ProtectedRoute>
           } 

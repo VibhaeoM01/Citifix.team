@@ -4,6 +4,8 @@ import { useAuth } from '../../contexts/AuthContext';
 
 const ProtectedRoute = ({ children, adminOnly = false }) => {
   const { user, admin, loading, isAdminAuthenticated } = useAuth();
+  
+  console.log('ProtectedRoute:', { user, loading, adminOnly });
 
   if (loading) {
     return (

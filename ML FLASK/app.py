@@ -1,202 +1,175 @@
+#!/usr/bin/env python3
+"""
+Flask service to serve a Keras (.h5) image classification model for MERN apps.
 
-from flask import Flask, request, jsonify
+- Loads a model from MODEL_PATH (default: epoch_10_valacc_0.96.h5)
+- /health  : health check
+- /predict : POST multipart/form-data with 'file' (or 'image') -> returns prediction
+"""
+
 import os
+import io
+import time
+import json
+import traceback
+from typing import List
+
 import numpy as np
+from PIL import Image
+from flask import Flask, request, jsonify
+from flask_cors import CORS
+
+# Attempt to import TensorFlow/Keras and MobileNetV2 preprocessing.
+# If TF is not available, we raise a clear error on startup.
 import tensorflow as tf
 from tensorflow import keras
-from tensorflow.keras.preprocessing import image
-from tensorflow.keras.applications.mobilenet_v2 import preprocess_input
-import time
+from tensorflow.keras.applications.mobilenet_v2 import preprocess_input as mnv2_preprocess
 
+# ---------------------------
+# Config
+# ---------------------------
+MODEL_PATH = os.environ.get("MODEL_PATH", "best_model.h5")
+PORT = int(os.environ.get("ML_PORT", "5002"))
+HOST = os.environ.get("ML_HOST", "0.0.0.0")
+# Comma-separated class labels (can be overridden via env var).
+CLASS_LABELS = os.environ.get("CLASS_LABELS", "Garbage,manhole,pothole").split(",")
+INPUT_SIZE = int(os.environ.get("INPUT_SIZE", "224"))  # assumes square input
+TOP_K = int(os.environ.get("TOP_K", "3"))
+
+# ---------------------------
+# App
+# ---------------------------
 app = Flask(__name__)
+CORS(app)
 
-# Track model metrics
-model_stats = {
-    "total_predictions": 0,
-    "successful_predictions": 0,
-    "fallback_predictions": 0,
-    "errors": 0,
-    "start_time": time.time()
-}
+start_time = time.time()
+model = None
 
-# Try to load the model in a safer way
-try:
-    # For MobileNetV2 model
-    base_model = keras.applications.MobileNetV2(
-        input_shape=(224, 224, 3),
+def _build_fallback_architecture(num_classes: int) -> keras.Model:
+    """Builds a MobileNetV2-based classifier if we only have weights .h5 (not a full saved model)."""
+    base = keras.applications.MobileNetV2(
+        input_shape=(INPUT_SIZE, INPUT_SIZE, 3),
         include_top=False,
-        weights='imagenet'
+        weights="imagenet"
     )
-    base_model.trainable = False
-    
-    # Create a simple classifier on top
-    model = keras.Sequential([
-        base_model,
-        keras.layers.GlobalAveragePooling2D(),
-        keras.layers.Dense(128, activation='relu'),
-        keras.layers.Dropout(0.3),
-        keras.layers.Dense(3, activation='softmax')
-    ])
-    
-    # Try to load weights if available, but don't crash if they don't load
+    base.trainable = False
+    x = keras.layers.GlobalAveragePooling2D()(base.output)
+    x = keras.layers.Dense(128, activation="relu")(x)
+    x = keras.layers.Dropout(0.3)(x)
+    outputs = keras.layers.Dense(num_classes, activation="softmax")(x)
+    return keras.Model(inputs=base.input, outputs=outputs)
+
+def load_model(model_path: str, class_labels: List[str]) -> keras.Model:
+    """
+    Try loading a full Keras saved model first. If that fails, build the fallback
+    architecture and load the weights.
+    """
+    # 1) Try as a full SavedModel / full .h5 model
     try:
-        model.load_weights('epoch_10_valacc_0.96.h5')
-        print("✅ Model weights loaded successfully")
-    except:
-        print("⚠️ Could not load model weights, using base MobileNetV2")
-    
-    class_labels = ['Garbage', 'manhole', 'pothole']  # These match your model categories
-    print("✅ Model initialized successfully")
-except Exception as e:
-    print(f"❌ Error loading model: {e}")
-    model = None
-    class_labels = ['Garbage', 'manhole', 'pothole']
-
-@app.route('/health', methods=['GET'])
-def health():
-    """Health check endpoint for the ML API"""
-    uptime = time.time() - model_stats["start_time"]
-    return jsonify({
-        'status': 'ok',
-        'model_status': 'loaded' if model is not None else 'fallback',
-        'uptime': f"{uptime:.2f} seconds"
-    })
-
-@app.route('/stats', methods=['GET'])
-def stats():
-    """Get model statistics"""
-    uptime = time.time() - model_stats["start_time"]
-    return jsonify({
-        'total_predictions': model_stats["total_predictions"],
-        'successful_predictions': model_stats["successful_predictions"],
-        'fallback_predictions': model_stats["fallback_predictions"],
-        'errors': model_stats["errors"],
-        'success_rate': f"{(model_stats['successful_predictions'] / max(model_stats['total_predictions'], 1)) * 100:.2f}%",
-        'uptime': f"{uptime:.2f} seconds"
-    })
-
-@app.route('/analyze', methods=['POST'])
-@app.route('/predict', methods=['POST'])
-def predict():
-    model_stats["total_predictions"] += 1
-    
-    if 'file' not in request.files and 'image' not in request.files:
-        model_stats["errors"] += 1
-        return jsonify({'error': 'No file provided'}), 400
-
-    # Get the file from either 'file' or 'image' field
-    file = request.files.get('file') or request.files.get('image')
-    description = request.form.get('description', '')
-    
-    # Save the file temporarily
-    os.makedirs('temp_uploads', exist_ok=True)
-    filepath = os.path.join('temp_uploads', file.filename)
-    file.save(filepath)
-    
-    # Process the image
-    try:
-        if model is not None:
-            # Load and preprocess the image for prediction
-            img = image.load_img(filepath, target_size=(224, 224))
-            img_array = image.img_to_array(img)
-            img_array = preprocess_input(img_array)  # Using MobileNetV2 preprocessing
-            img_array = np.expand_dims(img_array, axis=0)
-            
-            # Make prediction
-            pred = model.predict(img_array)
-            predicted_index = np.argmax(pred)
-            predicted_class = class_labels[predicted_index]
-            confidence = float(pred[0][predicted_index])
-            
-            # Map class to priority based on type
-            priority_map = {'Garbage': 'medium', 'manhole': 'high', 'pothole': 'high'}
-            priority = priority_map.get(predicted_class, 'medium')
-            
-            # Map class to departmental category for backend integration
-            category_map = {
-                'Garbage': 'Waste Management',
-                'manhole': 'Sanitation',
-                'pothole': 'Road Issues'
-            }
-            category = category_map.get(predicted_class, 'Other')
-            
-            print(f"✅ Prediction: {predicted_class} with {confidence:.2%} confidence")
-            model_stats["successful_predictions"] += 1
-        else:
-            # Fallback simple classifier using image properties
-            try:
-                import cv2
-                img = cv2.imread(filepath)
-                gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
-                
-                # Simple edge detection for rough classification
-                edges = cv2.Canny(gray, 100, 200)
-                edge_count = np.count_nonzero(edges)
-                
-                # Simple color analysis
-                avg_color = np.mean(img, axis=(0,1))
-                
-                # Very simple rules-based classification
-                if edge_count > 10000:  # Lots of edges
-                    predicted_class = 'pothole'
-                    category = 'Road Issues'
-                    priority = 'high'
-                elif avg_color[0] < 80 and avg_color[1] < 80:  # Dark image
-                    predicted_class = 'manhole'
-                    category = 'Sanitation'
-                    priority = 'high'
-                else:
-                    predicted_class = 'Garbage'
-                    category = 'Waste Management'
-                    priority = 'medium'
-                    
-                confidence = 0.7  # Default confidence for fallback
-                print(f"⚠️ Using OpenCV fallback classifier: {predicted_class}")
-            except ImportError:
-                # If OpenCV is not available, fall back to text analysis
-                print(f"⚠️ OpenCV not available, using text analysis fallback")
-                if description:
-                    text = description.lower()
-                    if 'road' in text or 'pothole' in text:
-                        predicted_class = 'pothole'
-                        category = 'Road Issues'
-                        priority = 'high'
-                    elif 'water' in text or 'manhole' in text or 'drain' in text:
-                        predicted_class = 'manhole'
-                        category = 'Sanitation'
-                        priority = 'high'
-                    else:
-                        predicted_class = 'Garbage'
-                        category = 'Waste Management'
-                        priority = 'medium'
-                else:
-                    # Default if no description either
-                    predicted_class = 'Garbage'
-                    category = 'Waste Management'
-                    priority = 'medium'
-                confidence = 0.5
-            
-            model_stats["fallback_predictions"] += 1
+        m = keras.models.load_model(model_path, compile=False)
+        # Optional sanity check: last layer units should match classes
+        last = m.layers[-1]
+        units = getattr(last, "units", None)
+        if units and units != len(class_labels):
+            print(f"[WARN] Last dense units ({units}) != number of class labels ({len(class_labels)}).")
+        print("[OK] Loaded full model.")
+        return m
     except Exception as e:
-        print(f"❌ Error during prediction: {e}")
-        predicted_class = 'Garbage'  # Default
-        category = 'Other'
-        confidence = 0.5
-        priority = 'medium'
-        model_stats["errors"] += 1
-    
-    # Return in the format expected by your backend
+        print(f"[INFO] load_model() failed, will try as weights-only. Reason: {e}")
+
+    # 2) Fallback: build architecture and load weights
+    try:
+        m = _build_fallback_architecture(len(class_labels))
+        m.load_weights(model_path)
+        print("[OK] Built MobileNetV2 head and loaded weights.")
+        return m
+    except Exception as e:
+        raise RuntimeError(f"Could not load weights into fallback architecture: {e}")
+
+def preprocess_image(file_stream: io.BytesIO) -> np.ndarray:
+    """Read an image from file stream, resize, preprocess for MobileNetV2, and add batch dimension."""
+    img = Image.open(file_stream).convert("RGB").resize((INPUT_SIZE, INPUT_SIZE))
+    arr = np.array(img, dtype=np.float32)
+    arr = mnv2_preprocess(arr)           # MobileNetV2 preprocessing
+    arr = np.expand_dims(arr, axis=0)    # [1, H, W, 3]
+    return arr
+
+def top_k_from_probs(probs: np.ndarray, labels: List[str], k: int):
+    """Return top-k class names and probabilities from a softmax output (shape [1, C])."""
+    k = min(k, probs.shape[1])
+    idx = np.argsort(probs[0])[::-1][:k]
+    return [
+        {
+            "label": labels[i] if i < len(labels) else f"class_{i}",
+            "prob": float(probs[0, i])
+        } for i in idx
+    ]
+
+@app.route("/health", methods=["GET"])
+def health():
+    uptime = time.time() - start_time
     return jsonify({
-        'category': category,                 # Backend expected departmental category
-        'predicted_class': predicted_class,   # Original ML class
-        'caption': f"Image appears to show a {predicted_class.lower()}",
-        'priority': priority,                 # For urgency determination
-        'urgency': priority,                  # Alternative name used in some backend code
-        'confidence': confidence
+        "status": "ok" if model is not None else "model_not_loaded",
+        "model_path": os.path.abspath(MODEL_PATH),
+        "classes": CLASS_LABELS,
+        "uptime_sec": round(uptime, 2),
+        "tf_version": tf.__version__,
+        "keras_version": keras.__version__
     })
 
-# Create temp uploads directory if it doesn't exist
-os.makedirs('temp_uploads', exist_ok=True)
+@app.route("/predict", methods=["POST"])
+def predict():
+    if model is None:
+        return jsonify({"error": "Model not loaded"}), 500
 
-if __name__ == '__main__':
-    app.run(host='0.0.0.0', port=5002)  # Changed to port 5002 to match backend configuration
+    # Accept multipart/form-data: file field name can be 'file' or 'image'
+    file = request.files.get("file") or request.files.get("image")
+    if not file:
+        return jsonify({"error": "No file provided. Send multipart/form-data with field 'file' (or 'image')."}), 400
+
+    try:
+        # Preprocess
+        arr = preprocess_image(file.stream)
+        # Predict
+        probs = model.predict(arr)
+        # Top-1
+        best_idx = int(np.argmax(probs[0]))
+        best_label = CLASS_LABELS[best_idx] if best_idx < len(CLASS_LABELS) else f"class_{best_idx}"
+        best_prob = float(probs[0, best_idx])
+        # Top-k
+        topk = top_k_from_probs(probs, CLASS_LABELS, TOP_K)
+
+        # Optional mapping for your backend
+        category_map = {
+            "Garbage": "Sanitation",
+            "manhole": "Sanitation",
+            "pothole": "Road Issues"
+        }
+        priority_map = {"Garbage": "medium", "manhole": "high", "pothole": "high"}
+
+        return jsonify({
+            "predicted_class": best_label,
+            "confidence": best_prob,
+            "topk": topk,
+            "category": category_map.get(best_label, "Other"),
+            "priority": priority_map.get(best_label, "medium"),
+            "caption": f"Image appears to show a {best_label.lower()}"
+        })
+    except Exception as e:
+        traceback.print_exc()
+        return jsonify({"error": str(e)}), 500
+
+def main():
+    global model
+    print("=" * 60)
+    print("Starting Flask ML API")
+    print(f"Model path : {os.path.abspath(MODEL_PATH)}")
+    print(f"Input size : {INPUT_SIZE}x{INPUT_SIZE}")
+    print(f"Class labels: {CLASS_LABELS}")
+    print("=" * 60)
+    # Load model at startup
+    model = load_model(MODEL_PATH, CLASS_LABELS)
+    app.run(host=HOST, port=PORT, debug=False)
+
+if __name__ == "__main__":
+    main()
