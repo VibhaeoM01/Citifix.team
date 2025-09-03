@@ -3,8 +3,47 @@
 Flask service to serve a Keras (.h5) image classification model for MERN apps.
 
 - Loads a model from MODEL_PATH (default: epoch_10_valacc_0.96.h5)
-- /health  : health check
-- /predict : POST multipart/form-data with 'file' (or 'image') -> returns prediction
+- /health  : heal        # Print confidence scores for all classes
+        print(f"DEBUG: Full predictions probabilities:")
+        for i, cls in enumerate(CLASS_LABELS):
+            if i < len(probs[0]):
+                print(f"  {cls}: {float(probs[0][i]):.4f}")
+        
+        # Debug logging for the highest prediction
+        print(f"DEBUG: Original prediction = '{best_label}'")
+        print(f"DEBUG: Normalized to lowercase = '{best_label_lower}'")
+        
+        # Store confidences in variables for manual analysis
+        confidence_pothole = float(probs[0][CLASS_LABELS.index("pothole")]) if "pothole" in CLASS_LABELS else 0
+        confidence_manhole = float(probs[0][CLASS_LABELS.index("manhole")]) if "manhole" in CLASS_LABELS else 0
+        confidence_garbage = float(probs[0][CLASS_LABELS.index("Garbage")]) if "Garbage" in CLASS_LABELS else 0
+        
+        print(f"DEBUG: Confidence scores - pothole: {confidence_pothole:.4f}, manhole: {confidence_manhole:.4f}, garbage: {confidence_garbage:.4f}")
+        
+        # Check if pothole and manhole confidences are close - if so, assume pothole
+        # This helps overcome model confusion between these similar classes
+        if confidence_pothole > 0.2 and confidence_manhole > 0.2 and abs(confidence_pothole - confidence_manhole) < 0.3:
+            print(f"DEBUG: Pothole and manhole confidences are close - defaulting to pothole")
+            best_label = "pothole"
+            best_label_lower = "pothole"
+            best_prob = confidence_pothole
+        
+        if "manhole" in best_label_lower:
+            category = "Sanitation"
+            priority = "high"
+            print("DEBUG: Detected as manhole → Sanitation category")
+        elif "garbage" in best_label_lower:
+            category = "Sanitation"
+            priority = "medium"
+            print("DEBUG: Detected as garbage → Sanitation category")
+        elif "pothole" in best_label_lower:
+            category = "Road Issues"
+            priority = "high"
+            print("DEBUG: Detected as pothole → Road Issues category")
+        else:
+            category = "Other"
+            priority = "medium"
+            print(f"DEBUG: Could not categorize '{best_label_lower}' → Other category"): POST multipart/form-data with 'file' (or 'image') -> returns prediction
 """
 
 import os
@@ -18,6 +57,11 @@ import numpy as np
 from PIL import Image
 from flask import Flask, request, jsonify
 from flask_cors import CORS
+import tempfile
+import os
+
+# Import speech to text
+from speech_to_text import SpeechToText
 
 # Attempt to import TensorFlow/Keras and MobileNetV2 preprocessing.
 # If TF is not available, we raise a clear error on startup.
@@ -28,7 +72,7 @@ from tensorflow.keras.applications.mobilenet_v2 import preprocess_input as mnv2_
 # ---------------------------
 # Config
 # ---------------------------
-MODEL_PATH = os.environ.get("MODEL_PATH", "best_model.h5")
+MODEL_PATH = os.environ.get("MODEL_PATH", "my_trained_model.h5")
 PORT = int(os.environ.get("ML_PORT", "5002"))
 HOST = os.environ.get("ML_HOST", "0.0.0.0")
 # Comma-separated class labels (can be overridden via env var).
@@ -117,6 +161,49 @@ def health():
         "keras_version": keras.__version__
     })
 
+@app.route("/transcribe", methods=["POST"])
+def transcribe_audio():
+    # Check if file was uploaded
+    if "file" not in request.files:
+        return jsonify({"error": "No audio file provided"}), 400
+        
+    file = request.files["file"]
+    if file.filename == "":
+        return jsonify({"error": "No selected file"}), 400
+        
+    try:
+        # Save the uploaded file temporarily
+        temp_dir = tempfile.mkdtemp()
+        temp_path = os.path.join(temp_dir, "temp_audio.wav")
+        file.save(temp_path)
+        
+        # Initialize speech to text
+        stt = SpeechToText()
+        
+        # Perform transcription
+        result = stt.transcribe(temp_path)
+        
+        # Clean up
+        stt.cleanup_audio(temp_path)
+        try:
+            os.rmdir(temp_dir)
+        except:
+            pass
+            
+        if result["success"]:
+            return jsonify({
+                "success": True,
+                "text": result["text"]
+            })
+        else:
+            return jsonify({
+                "success": False,
+                "error": result["error"]
+            }), 500
+            
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
 @app.route("/predict", methods=["POST"])
 def predict():
     if model is None:
@@ -139,22 +226,63 @@ def predict():
         # Top-k
         topk = top_k_from_probs(probs, CLASS_LABELS, TOP_K)
 
-        # Optional mapping for your backend
-        category_map = {
-            "Garbage": "Sanitation",
-            "manhole": "Sanitation",
-            "pothole": "Road Issues"
-        }
-        priority_map = {"Garbage": "medium", "manhole": "high", "pothole": "high"}
+        # Force specific categories regardless of prediction
+        # This ensures we always map to a valid category
+        best_label_lower = best_label.lower()
+        print(f"DEBUG: Original prediction = '{best_label}'")
+        print(f"DEBUG: Normalized to lowercase = '{best_label_lower}'")
+        
+        if "manhole" in best_label_lower:
+            category = "Sanitation"
+            priority = "high"
+            print("DEBUG: Detected as manhole → Sanitation category")
+        elif "garbage" in best_label_lower:
+            category = "Sanitation"
+            priority = "medium"
+            print("DEBUG: Detected as garbage → Sanitation category")
+        elif "pothole" in best_label_lower:
+            category = "Road Issues"
+            priority = "high"
+            print("DEBUG: Detected as pothole → Road Issues category")
+        else:
+            category = "Other"
+            priority = "medium"
+            print(f"DEBUG: Could not categorize '{best_label_lower}' → Other category")
+        
+        # Debug logging - print everything for troubleshooting
+        print(f"DEBUG: ML prediction raw = '{best_label}' (confidence: {best_prob:.2f})")
+        print(f"DEBUG: best_label.lower() = '{best_label.lower()}'")
+        print(f"DEBUG: Mapped category = '{category}'")
+        print(f"DEBUG: Mapped priority = '{priority}'")
+        print(f"DEBUG: Full response being sent:")
 
-        return jsonify({
+        # Map the predicted class to the appropriate category
+        if best_label_lower == "manhole":
+            category = "Sanitation"
+            priority = "high"
+        elif best_label_lower == "garbage":
+            category = "Sanitation"
+            priority = "medium"
+        elif best_label_lower == "pothole":
+            category = "Road Issues"
+            priority = "high"
+        else:
+            category = "Other"
+            priority = "medium"
+        
+        print(f"DEBUG: Image classified as {best_label_lower}, mapped to {category}")
+        
+        response = {
             "predicted_class": best_label,
             "confidence": best_prob,
             "topk": topk,
-            "category": category_map.get(best_label, "Other"),
-            "priority": priority_map.get(best_label, "medium"),
+            "category": category,  # Use the mapped category
+            "priority": priority,
             "caption": f"Image appears to show a {best_label.lower()}"
-        })
+        }
+        
+        print(f"DEBUG: SENDING RESPONSE: {response}")
+        return jsonify(response)
     except Exception as e:
         traceback.print_exc()
         return jsonify({"error": str(e)}), 500

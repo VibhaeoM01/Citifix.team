@@ -163,11 +163,13 @@ const ComplaintForm = () => {
         
         // Check both possible locations for ML results and ensure they have required fields
         const mlResultsData = data.mlResults || (data.complaint && data.complaint.mlResults);
+        console.log('Raw ML Results Data:', mlResultsData);
         if (mlResultsData) {
           // Ensure all required fields exist with defaults
+          // Fixed to use predictedCategory and predictedUrgency from the backend
           const formattedResults = {
-            category: mlResultsData.category || 'Other',
-            urgency: mlResultsData.urgency || 'medium',
+            category: mlResultsData.predictedCategory || mlResultsData.category || 'Other',
+            urgency: mlResultsData.predictedUrgency || mlResultsData.urgency || 'medium',
             caption: mlResultsData.caption || 'Analysis complete'
           };
           console.log('Setting ML results:', formattedResults);

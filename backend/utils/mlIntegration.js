@@ -20,14 +20,43 @@ const callMLAPI = async (imagePath, description) => {
     });
 
     if (response.status === 200) {
+      console.log('ML API RAW RESPONSE:', JSON.stringify(response.data, null, 2));
+      
       const { predicted_class, confidence, category, priority, caption } = response.data;
-      return {
+      
+      console.log('ML API EXTRACTED VALUES:', {
+        predicted_class,
+        confidence,
+        category,
+        priority,
+        caption
+      });
+      
+      // Map detected class to the appropriate category
+      let predictedCategory = category || 'Other';
+      let predictedUrgency = priority || 'medium';
+      
+      // Override: Directly use the predicted class to determine category
+      if (predicted_class && predicted_class.toLowerCase() === 'pothole') {
+        predictedCategory = 'Road Issues';
+        predictedUrgency = 'high';
+      } else if (predicted_class && 
+                (predicted_class.toLowerCase() === 'garbage' || 
+                 predicted_class.toLowerCase() === 'manhole')) {
+        predictedCategory = 'Sanitation';
+        predictedUrgency = predicted_class.toLowerCase() === 'manhole' ? 'high' : 'medium';
+      }
+      
+      const result = {
         caption: caption || 'No caption generated',
-        predictedCategory: category || 'Other',
-        predictedUrgency: priority || 'medium',
+        predictedCategory: predictedCategory,
+        predictedUrgency: predictedUrgency,
         confidence: confidence || 0.5,
         detectedClass: predicted_class
       };
+      
+      console.log('ML API RETURNING:', JSON.stringify(result, null, 2));
+      return result;
     } else {
       throw new Error('ML API returned non-200 status');
     }
