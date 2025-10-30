@@ -54,6 +54,32 @@
   margin-bottom: 1.5rem;
 }
 
+.authDivider {
+  text-align: center;
+  margin: 1.5rem 0;
+  position: relative;
+  
+  &::before {
+    content: '';
+    position: absolute;
+    top: 50%;
+    left: 0;
+    right: 0;
+    height: 1px;
+    background: #e2e8f0;
+    z-index: 1;
+  }
+  
+  span {
+    background: rgba(255, 255, 255, 0.95);
+    padding: 0 1rem;
+    color: #64748b;
+    font-size: 0.875rem;
+    position: relative;
+    z-index: 2;
+  }
+}
+
 .authActions {
   display: flex;
   justify-content: center;

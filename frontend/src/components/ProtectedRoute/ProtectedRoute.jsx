@@ -1,11 +1,8 @@
 import { Navigate } from 'react-router-dom';
-import { useAuth } from '../../contexts/AuthContext';
-
+import { useAuth } from '../../contexts/useAuth';
 
 const ProtectedRoute = ({ children, adminOnly = false }) => {
   const { user, admin, loading, isAdminAuthenticated } = useAuth();
-  
-  console.log('ProtectedRoute:', { user, loading, adminOnly });
 
   if (loading) {
     return (
@@ -16,17 +13,12 @@ const ProtectedRoute = ({ children, adminOnly = false }) => {
   }
 
   if (adminOnly) {
-    if (!isAdminAuthenticated()) {
-      return <Navigate to="/admin/login" replace />;
-    }
-    // Optionally, you can check for admin object existence
-    if (!admin) {
+    if (!isAdminAuthenticated() || !admin || !['admin', 'staff'].includes(admin.role)) {
       return <Navigate to="/admin/login" replace />;
     }
     return children;
   }
 
-  // For user-only routes
   if (!user) {
     return <Navigate to="/login" replace />;
   }
@@ -34,4 +26,4 @@ const ProtectedRoute = ({ children, adminOnly = false }) => {
   return children;
 };
 
-export default ProtectedRoute; 
+export default ProtectedRoute;

@@ -3,7 +3,11 @@ const mongoose = require('mongoose');
 const cors = require('cors');
 const helmet = require('helmet');
 const rateLimit = require('express-rate-limit');
+const { setupFolders } = require('./config/setup');
 require('dotenv').config();
+
+// Ensure required directories exist
+setupFolders();
 
 const authRoutes = require('./routes/auth');
 const complaintRoutes = require('./routes/complaints');
@@ -33,6 +37,12 @@ app.use(express.urlencoded({ extended: true, limit: '10mb' }));
 
 // Static file serving for uploaded images
 app.use('/uploads', express.static('uploads'));
+
+// Log static file requests for debugging
+app.use('/uploads', (req, res, next) => {
+  console.log('Static file request:', req.url);
+  next();
+});
 
 // Database connection
 mongoose.connect(process.env.MONGODB_URI || 'mongodb://localhost:27017/smart-city-complaints', {

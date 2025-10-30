@@ -3,7 +3,7 @@
 
 import React from 'react';
 import { Link, useNavigate, useLocation } from 'react-router-dom';
-import { useAuth } from '../../contexts/AuthContext';
+import { useAuth } from '../../contexts/useAuth';
 import { useTranslation } from 'react-i18next';
 import styles from './Navbar.module.scss';
 

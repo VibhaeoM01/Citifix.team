@@ -8,63 +8,251 @@ const ML_API_BASE_URL = process.env.ML_API_URL || 'http://localhost:5002';
 // Call ML API for image analysis
 const callMLAPI = async (imagePath, description) => {
   try {
-    const formData = new FormData();
-    formData.append('file', fs.createReadStream(imagePath));
-    if (description) formData.append('description', description);
+    console.log('ML API Call Starting:', {
+      imagePath,
+      hasDescription: !!description,
+      mlApiUrl: ML_API_BASE_URL
+    });
 
+    // Validate image exists and is accessible
+    if (!imagePath) {
+      throw new Error('Image path is required');
+    }
+
+    // Check if file exists
+    if (!fs.existsSync(imagePath)) {
+      throw new Error(`Image file not found at path: ${imagePath}`);
+    }
+
+    // Check file permissions
+    try {
+      await fs.promises.access(imagePath, fs.constants.R_OK);
+    } catch (err) {
+      throw new Error(`Cannot read image file: ${err.message}`);
+    }
+
+    // Validate file size
+    const stats = fs.statSync(imagePath);
+    const fileSizeMB = stats.size / (1024 * 1024);
+    if (fileSizeMB > 10) { // 10MB limit
+      throw new Error(`Image file too large: ${fileSizeMB.toFixed(2)}MB (max 10MB)`);
+    }
+
+    console.log('File validation passed:', {
+      size: `${fileSizeMB.toFixed(2)}MB`,
+      path: imagePath
+    });
+
+    // Create form data with validation
+    const formData = new FormData();
+    const fileStream = fs.createReadStream(imagePath);
+    formData.append('file', fileStream);
+    if (description) {
+      if (typeof description !== 'string') {
+        console.warn('Description is not a string, converting...');
+        description = String(description);
+      }
+      formData.append('description', description);
+    }
+
+    // Test ML API connection with retries (regardless of description)
+    let healthCheck = false;
+    let retries = 3;
+    while (retries > 0 && !healthCheck) {
+      try {
+        healthCheck = await testMLConnection();
+        if (healthCheck) break;
+      } catch (err) {
+        console.warn(`ML API health check failed (${retries} retries left):`, err.message);
+        retries--;
+        if (retries > 0) await new Promise(resolve => setTimeout(resolve, 1000));
+      }
+    }
+
+    if (!healthCheck) {
+      console.warn('ML API health check failed after retries, using fallback analysis');
+      const fallback = description ? analyzeDescription(description || '') : {
+        caption: 'Unable to process image',
+        predictedCategory: 'Other',
+        predictedUrgency: 'medium',
+        confidence: 0.3
+      };
+      return {
+        ...fallback,
+        source: 'fallback_health_check_failed'
+      };
+    }
+
+    console.log('Sending image to ML API...');
     const response = await axios.post(`${ML_API_BASE_URL}/predict`, formData, {
       headers: {
         ...formData.getHeaders(),
+        'Accept': 'application/json'
       },
-      timeout: 30000, // 30 seconds timeout
+      timeout: 60000, // 60 seconds timeout
+      maxContentLength: 50 * 1024 * 1024, // 50MB limit
+      maxBodyLength: 50 * 1024 * 1024, // 50MB limit
+      validateStatus: status => status < 500 // Only reject on server errors
+    }).catch(err => {
+      // Network / server error
+      throw new Error(`Failed to call ML API: ${err.message}`);
     });
 
-    if (response.status === 200) {
-      console.log('ML API RAW RESPONSE:', JSON.stringify(response.data, null, 2));
+    // Log response basics
+  console.log('ML API response status:', response.status);
+    try {
+      console.log('ML API response headers:', JSON.stringify(response.headers || {}, null, 2));
+    } catch (e) {
+      // ignore
+    }
+
+    // Ensure we can interpret the body even if it's not JSON
+    let respData = response.data;
+    if (typeof respData === 'string') {
+      // Try to parse JSON string
+      try {
+        respData = JSON.parse(respData);
+      } catch (e) {
+        // Not JSON - include raw text in error for debugging
+        throw new Error(`ML API returned non-JSON response (status ${response.status}): ${respData}`);
+      }
+    }
+
+    // Handle different response status codes
+    if (response.status === 429) {
+      throw new Error('ML API rate limit exceeded, please try again later');
+    } else if (response.status === 413) {
+      throw new Error('Image file size too large for ML API');
+    } else if (response.status === 415) {
+      throw new Error('Unsupported image format');
+    } else if (response.status !== 200) {
+      throw new Error(`ML API Error: ${respData?.message || response.statusText}`);
+    }
+
+    if (!respData) {
+      throw new Error('ML API returned empty response');
+    }
+
+  console.log('ML API RAW RESPONSE:', JSON.stringify(respData, null, 2));
+    
+  const { predicted_class, confidence, category, priority, caption, predictedCategory: apiPredictedCategory, predictedUrgency: apiPredictedUrgency, uncertain } = respData;
+
+    // Normalize confidence from API (may arrive as percentage string)
+    let normalizedConfidence = 0.5;
+    if (typeof confidence === 'number' && !Number.isNaN(confidence)) {
+      normalizedConfidence = confidence;
+    } else if (typeof confidence === 'string') {
+      const parsed = parseFloat(confidence.replace(/%/g, ''));
+      if (!Number.isNaN(parsed)) {
+        normalizedConfidence = parsed > 1 ? parsed / 100 : parsed;
+      }
+    }
+    
+    // Validate ML response
+    if (!predicted_class && !category) {
+      throw new Error('Invalid ML API response: missing classification data');
+    }
+
+    console.log('ML API EXTRACTED VALUES:', {
+      predicted_class,
+      confidence_raw: confidence,
+      confidence_normalized: normalizedConfidence,
+      category,
+      priority,
+      caption
+    });
       
-      const { predicted_class, confidence, category, priority, caption } = response.data;
+    // Enhanced category and urgency mapping
+  // Prefer API-provided mapped fields if present
+  let predictedCategory = apiPredictedCategory || category || 'Other';
+  let predictedUrgency = apiPredictedUrgency || priority || 'medium';
       
-      console.log('ML API EXTRACTED VALUES:', {
-        predicted_class,
-        confidence,
-        category,
-        priority,
-        caption
-      });
-      
-      // Map detected class to the appropriate category
-      let predictedCategory = category || 'Other';
-      let predictedUrgency = priority || 'medium';
-      
-      // Override: Directly use the predicted class to determine category
-      if (predicted_class && predicted_class.toLowerCase() === 'pothole') {
-        predictedCategory = 'Road Issues';
-        predictedUrgency = 'high';
-      } else if (predicted_class && 
-                (predicted_class.toLowerCase() === 'garbage' || 
-                 predicted_class.toLowerCase() === 'manhole')) {
-        predictedCategory = 'Sanitation';
-        predictedUrgency = predicted_class.toLowerCase() === 'manhole' ? 'high' : 'medium';
+      // More detailed category mapping
+      if (!apiPredictedCategory && predicted_class) {
+        const classLower = predicted_class.toLowerCase();
+        switch(classLower) {
+          case 'pothole':
+          case 'road damage':
+          case 'crack':
+            predictedCategory = 'Road Issues';
+            predictedUrgency = 'high';
+            break;
+          case 'garbage':
+          case 'waste':
+          case 'manhole':
+          case 'drain':
+            predictedCategory = 'Sanitation';
+            predictedUrgency = classLower === 'manhole' || classLower === 'drain' ? 'high' : 'medium';
+            break;
+          case 'street light':
+          case 'light pole':
+            predictedCategory = 'Street Lighting';
+            predictedUrgency = classLower.includes('broken') ? 'high' : 'medium';
+            break;
+          case 'water':
+          case 'leakage':
+          case 'pipe':
+            predictedCategory = 'Water Supply';
+            predictedUrgency = classLower.includes('leak') ? 'high' : 'medium';
+            break;
+        }
+      }
+
+      // Consider description for additional context but do NOT automatically override ML
+      // Return description analysis alongside ML results so caller can decide.
+      let descriptionAnalysis = null;
+      if (description) {
+        descriptionAnalysis = analyzeDescription(description);
+        console.log('Description analysis:', descriptionAnalysis);
+        // Only override when ML did not provide a category at all
+        if ((!predicted_class && !apiPredictedCategory && !category) || !predictedCategory) {
+          predictedCategory = descriptionAnalysis.predictedCategory;
+          predictedUrgency = descriptionAnalysis.predictedUrgency;
+        }
       }
       
+      const lowConfidence = normalizedConfidence < 0.5;
+      const suggestedCategory = predictedCategory;
+      if (lowConfidence) {
+        console.warn('ML confidence below threshold, marking result as low confidence');
+        predictedUrgency = 'medium';
+      }
+
       const result = {
         caption: caption || 'No caption generated',
-        predictedCategory: predictedCategory,
+        predictedCategory: lowConfidence ? 'Other' : predictedCategory,
         predictedUrgency: predictedUrgency,
-        confidence: confidence || 0.5,
-        detectedClass: predicted_class
+        confidence: normalizedConfidence,
+        detectedClass: predicted_class,
+        uncertain: !!uncertain,
+        source: 'ml_api',
+        descriptionAnalysis: descriptionAnalysis,
+        lowConfidence,
+        suggestedCategory: lowConfidence ? suggestedCategory : null
       };
       
       console.log('ML API RETURNING:', JSON.stringify(result, null, 2));
       return result;
-    } else {
-      throw new Error('ML API returned non-200 status');
-    }
+    // (No dangling else) — always return above after processing
   } catch (error) {
     console.error('ML API call failed:', error.message);
+    console.error('Stack:', error.stack);
     
-    // Fallback to basic analysis based on description
-    return analyzeDescription(description);
+    // Enhanced fallback logic
+    if (description) {
+      const fallbackResult = analyzeDescription(description);
+      fallbackResult.source = 'fallback';
+      return fallbackResult;
+    }
+    
+    // Default fallback if no description available
+    return {
+      caption: 'Unable to process image',
+      predictedCategory: 'Other',
+      predictedUrgency: 'medium',
+      confidence: 0.3,
+      source: 'error_fallback'
+    };
   }
 };
 

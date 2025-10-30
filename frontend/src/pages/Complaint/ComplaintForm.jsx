@@ -3,12 +3,13 @@ import { useTranslation } from 'react-i18next';
 import styles from './ComplaintForm.module.scss';
 import  { useState } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { useAuth } from '../../contexts/AuthContext';
+import { useAuth } from '../../contexts/useAuth';
 
 const ComplaintForm = () => {
   const [formData, setFormData] = useState({
     description: '',
-    location: ''
+    location: '',
+    email: ''
   });
   const [photo, setPhoto] = useState(null);
   const [photoPreview, setPhotoPreview] = useState(null);
@@ -32,15 +33,33 @@ const ComplaintForm = () => {
   const handlePhotoChange = (e) => {
     const file = e.target.files[0];
     if (file) {
-      if (file.size > 5 * 1024 * 1024) { // 5MB limit
-        setError('Photo size should be less than 5MB');
+      // Check file size (10MB limit as per server config)
+      if (file.size > 10 * 1024 * 1024) {
+        setError('Photo size should be less than 10MB');
         return;
       }
+
+      // Check file type
+      const allowedTypes = ['image/jpeg', 'image/jpg', 'image/png'];
+      if (!allowedTypes.includes(file.type)) {
+        setError('Only JPG, JPEG, and PNG images are allowed');
+        return;
+      }
+
+      console.log('Selected file:', {
+        name: file.name,
+        type: file.type,
+        size: `${(file.size / 1024 / 1024).toFixed(2)}MB`
+      });
 
       setPhoto(file);
       const reader = new FileReader();
       reader.onload = (e) => {
         setPhotoPreview(e.target.result);
+      };
+      reader.onerror = (e) => {
+        console.error('FileReader error:', e.target.error);
+        setError('Error reading file. Please try again.');
       };
       reader.readAsDataURL(file);
       setError('');
@@ -57,7 +76,8 @@ const ComplaintForm = () => {
             location: `${latitude}, ${longitude}`
           });
         },
-        (_error) => {
+        (error) => {
+          console.error('Geolocation error:', error);
           setError('Unable to get your location. Please enter manually.');
         }
       );
@@ -69,148 +89,214 @@ const ComplaintForm = () => {
   const handleSubmit = async (e) => {
     e.preventDefault();
     console.log('Form submission started');
-    console.log('Form data:', formData);
-    console.log('Photo:', photo);
-    console.log('User:', user);
     
     setLoading(true);
     setError('');
     setSuccess('');
-    setMlProcessing(false); // Reset ML processing state
+    setMlProcessing(false);
 
-    if (!photo) {
-      console.log('Validation failed: No photo uploaded');
-      setError('Please upload a photo');
-      setLoading(false);
-      return;
-    }
-
-    if (!formData.location.trim()) {
-      setError('Please provide a location');
-      setLoading(false);
-      return;
-    }
+    // Get authentication token
+    const token = localStorage.getItem('token');
 
     try {
-      // Create FormData for file upload
-      const submitData = new FormData();
-      console.log('Preparing photo upload:', { 
-        fileName: photo.name,
-        fileSize: photo.size,
-        fileType: photo.type 
-      });
-      
-      // Ensure correct file field name for multer
-      submitData.append('photo', photo);
-      submitData.append('description', formData.description);
-      submitData.append('location', formData.location);
-      
-      // User ID is already available through the auth token
-      console.log('Form data prepared:', {
-        description: formData.description,
+      // Validate authentication
+      if (!token) {
+        throw new Error('Please log in to submit a complaint');
+      }
+
+      // Validate form data
+      if (!photo) {
+        throw new Error('Please upload a photo');
+      }
+
+      if (!formData.location.trim()) {
+        throw new Error('Please provide a location');
+      }
+
+      if (!formData.email.trim()) {
+        throw new Error('Please provide an email address');
+      }
+
+      // Log submission details
+      console.log('Submitting complaint:', {
+        photoName: photo.name,
+        photoSize: `${(photo.size / 1024 / 1024).toFixed(2)}MB`,
+        photoType: photo.type,
         location: formData.location,
-        user: user
+        email: formData.email,
+        description: formData.description?.length || 0,
+        hasUser: !!user
       });
-      
-      setMlProcessing(true); // Start ML processing before API call
 
-      setMlProcessing(true); // Start ML processing indicator
-      const apiUrl = import.meta.env.VITE_API_URL || 'http://localhost:5001/api';
-      console.log('Sending request to:', `${apiUrl}/complaints`);
-      console.log('Token:', localStorage.getItem('token'));
+      // Create FormData for ML processing
+      const formDataObj = new FormData();
+      formDataObj.append('photo', photo);
+      formDataObj.append('description', formData.description);
+      formDataObj.append('location', formData.location);
+      formDataObj.append('email', formData.email);
       
-      console.log('Making API request with FormData contents:', 
-        Array.from(submitData.entries()).reduce((obj, [key, value]) => {
-          obj[key] = value instanceof File ? `File: ${value.name}` : value;
-          return obj;
-        }, {})
-      );
+      // Step 1: ML Processing
+      console.log('Starting ML processing...');
+      setMlProcessing(true);
+      
+      const apiUrl = import.meta.env.VITE_API_URL || '/api';
+        const mlResponse = await fetch(`${apiUrl}/complaints/analyze-image`, {
+          method: 'POST',
+          headers: {
+            'Authorization': `Bearer ${token}`,
+            'Accept': 'application/json'
+          },
+          body: formDataObj
+        });
 
-      // Don't set any Content-Type header, let the browser set it with the boundary
-      const response = await fetch(`${apiUrl}/complaints`, {
+        let mlResponseText;
+        try {
+          mlResponseText = await mlResponse.text();
+          console.log('ML Response text:', mlResponseText);
+
+          // Check if response text is empty
+          if (!mlResponseText.trim()) {
+            throw new Error('ML API returned empty response');
+          }
+
+          // Check for specific error status codes
+          if (mlResponse.status === 429) {
+            throw new Error('System is busy. Please try again in a few minutes.');
+          } else if (mlResponse.status === 413) {
+            throw new Error('Image file is too large. Please use a smaller image (max 10MB).');
+          } else if (mlResponse.status === 415) {
+            throw new Error('Invalid image format. Please use JPG, JPEG, or PNG format.');
+          } else if (!mlResponse.ok) {
+            throw new Error(`ML Processing failed: ${mlResponseText}`);
+          }
+        } catch (err) {
+          console.error('Error processing ML response:', err);
+          throw new Error(`Image analysis failed: ${err.message}. Please try again or use a different image.`);
+        }      if (!mlResponse.ok) {
+        throw new Error(`ML Processing failed: ${mlResponseText}`);
+      }
+
+      let mlData;
+      try {
+        mlData = JSON.parse(mlResponseText);
+        console.log('\n=== ML RESPONSE DEBUG ===');
+        console.log('Raw ML response:', mlResponseText);
+        console.log('Parsed ML data:', mlData);
+        console.log('response.results:', mlData?.results);
+        console.log('response.mlResults:', mlData?.mlResults);
+        console.log('========================\n');
+      } catch (err) {
+        console.error('Error parsing ML response:', err);
+        throw new Error(`Invalid ML response format: ${err.message}`);
+      }
+
+      const mlResultsRaw = mlData?.results || mlData?.mlResults || mlData;
+      if (!mlResultsRaw || typeof mlResultsRaw !== 'object') {
+        throw new Error('ML response did not include prediction results');
+      }
+
+      const categoryFromML = mlResultsRaw.predictedCategory || mlResultsRaw.category || 'Other';
+      const urgencyFromML = mlResultsRaw.predictedUrgency || mlResultsRaw.urgency || 'medium';
+
+      console.log('Using ML results payload:', mlResultsRaw);
+      console.log('Resolved categoryFromML:', categoryFromML);
+      console.log('Resolved urgencyFromML:', urgencyFromML);
+
+      // Step 2: Submit complete complaint
+      console.log('Submitting complaint with ML results:', mlResultsRaw);
+      
+      // Add ML results to form data
+      formDataObj.append('category', categoryFromML);
+      formDataObj.append('urgency', urgencyFromML);
+
+      const submitResponse = await fetch(`${apiUrl}/complaints`, {
         method: 'POST',
         headers: {
-          'Authorization': `Bearer ${localStorage.getItem('token')}`
+          'Authorization': `Bearer ${token}`
         },
-        body: submitData
+        body: formDataObj
       });
-      
-      console.log('Response status:', response.status);
-      console.log('Response headers:', Object.fromEntries(response.headers.entries()));
-      
-      const data = await response.json();
-      console.log('Response data:', data);
-      
-      // Log specific parts of the response
-      if (data.complaint) {
-        console.log('Complaint created:', {
-          id: data.complaint.id,
-          category: data.complaint.category,
-          urgency: data.complaint.urgency
-        });
-      }
-      
-      // Check if we have the expected ML results
-      if (data.mlResults) {
-        console.log('ML results received:', data.mlResults);
-      } else {
-        console.warn('No ML results in response');
+
+      let responseData;
+      try {
+        const contentType = submitResponse.headers.get('content-type');
+        if (contentType && contentType.includes('application/json')) {
+          responseData = await submitResponse.json();
+        } else {
+          const submitResponseText = await submitResponse.text();
+          console.log('Submit Response text:', submitResponseText);
+          
+          if (!submitResponse.ok) {
+            throw new Error(`Complaint submission failed: ${submitResponseText}`);
+          }
+          responseData = { message: submitResponseText };
+        }
+      } catch (err) {
+        console.error('Error processing submit response:', err);
+        throw new Error('Failed to process submission response: ' + err.message);
       }
 
-      if (response.ok) {
-        console.log('Submission successful, setting states...');
-        setSuccess('Complaint submitted successfully!');
-        
-        // Check both possible locations for ML results and ensure they have required fields
-        const mlResultsData = data.mlResults || (data.complaint && data.complaint.mlResults);
-        console.log('Raw ML Results Data:', mlResultsData);
-        if (mlResultsData) {
-          // Ensure all required fields exist with defaults
-          // Fixed to use predictedCategory and predictedUrgency from the backend
-          const formattedResults = {
-            category: mlResultsData.predictedCategory || mlResultsData.category || 'Other',
-            urgency: mlResultsData.predictedUrgency || mlResultsData.urgency || 'medium',
-            caption: mlResultsData.caption || 'Analysis complete'
-          };
-          console.log('Setting ML results:', formattedResults);
-          setMlResults(formattedResults);
-        } else {
-          console.warn('No ML results to set');
-          // Set default ML results
-          setMlResults({
-            category: 'Processing',
-            urgency: 'medium',
-            caption: 'Analysis in progress...'
-          });
-        }
-        
-        console.log('Resetting form...');
-        // Reset form
-        setFormData({ description: '', location: '' });
-        setPhoto(null);
-        setPhotoPreview(null);
-        
-        console.log('Starting redirect timer...');
-        // Redirect after 3 seconds
-        setTimeout(() => {
-          console.log('Redirecting to home...');
-          navigate('/');
-        }, 3000);
-      } else {
-        console.error('Submission failed:', response.status, data);
-        setError(data.message || 'Failed to submit complaint');
+      console.log('Submission successful:', responseData);
+      
+      if (responseData.complaint) {
+        console.log('Complaint created:', {
+          id: responseData.complaint.id,
+          category: responseData.complaint.category,
+          urgency: responseData.complaint.urgency
+        });
       }
+
+      // Format ML results
+      const mlResultsData = mlResultsRaw || responseData.mlResults || responseData.complaint?.mlResults;
+      console.log('\n=== ML RESULTS PROCESSING ===');
+      console.log('Raw mlResultsData:', mlResultsData);
+      
+      if (mlResultsData) {
+        const formattedResults = {
+          category: mlResultsData.predictedCategory || mlResultsData.category || 'Other',
+          urgency: mlResultsData.predictedUrgency || mlResultsData.urgency || 'medium',
+          caption: mlResultsData.caption || 'Analysis complete'
+        };
+        console.log('Formatted results:', formattedResults);
+        console.log('Category selection logic:');
+        console.log('- predictedCategory:', mlResultsData.predictedCategory);
+        console.log('- category:', mlResultsData.category);
+        console.log('- final selection:', formattedResults.category);
+        console.log('========================\n');
+        setMlResults(formattedResults);
+      }
+
+      // Success! Reset form and show success message
+      setSuccess('Your complaint has been submitted successfully! Redirecting...');
+      console.log('Form submission completed successfully');
+      
+      // Reset form
+      setFormData({
+        description: '',
+        location: '',
+        email: ''
+      });
+      setPhoto(null);
+      setPhotoPreview(null);
+      
+      // Redirect after a delay
+      setTimeout(() => {
+        console.log('Redirecting to home...');
+        navigate('/');
+      }, 3000);
+
     } catch (err) {
-      console.error('Error during submission:', err);
+      console.error('Form submission error:', err);
       console.log('Error details:', {
         message: err.message,
-        stack: err.stack
+        stack: err.stack,
+        name: err.name,
+        cause: err.cause
       });
-      setError('An error occurred while submitting the complaint');
+      setError(err.message || 'An error occurred while submitting the complaint');
     } finally {
-      console.log('Submission completed. Loading:', loading, 'ML Processing:', mlProcessing);
       setLoading(false);
-      setMlProcessing(false); // Always turn off ML processing
+      setMlProcessing(false);
     }
   };
   return (
@@ -265,6 +351,24 @@ const ComplaintForm = () => {
               placeholder={t('describeIssue')}
               rows="4"
             />
+          </div>
+
+          {/* Email */}
+          <div className="form-group">
+            <label htmlFor="email" className="form-label">Email Address *</label>
+            <input
+              type="email"
+              id="email"
+              name="email"
+              className="form-input"
+              value={formData.email}
+              onChange={handleChange}
+              required
+              placeholder="Enter your email address for notifications"
+            />
+            <small className={styles.fieldHint}>
+              We'll send you updates about your complaint to this email address
+            </small>
           </div>
 
           {/* Location */}

@@ -1,5 +1,23 @@
-# Ignore ML folder
+# Ignore ML folders
 ML/
- # Ignore environment files
+ML FLASK/New folder
+ML FLASK/pothole
+ML FLASK/POTHOLE IMAGES
+ML FLASK/s79ub7eiks9utxektc8kk
+ML FLASK/split_data
+ML FLASK/dataset1
+ML FLASK/garbage
+ML FLASK/manhole
+ML FLASK/models
+
+# Ignore environment files
 .env
 backend/.env
+
+# Other common files to ignore
+node_modules/
+__pycache__/
+*.pyc
+*.h5
+uploads/*
+!uploads/.gitkeep

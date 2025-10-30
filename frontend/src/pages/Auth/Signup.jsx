@@ -1,6 +1,6 @@
 import { useState } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
-import { useAuth } from '../../contexts/AuthContext';
+import { useAuth } from '../../contexts/useAuth';
 import styles from './Auth.module.scss';
 
 const Signup = () => {
@@ -54,6 +54,7 @@ const Signup = () => {
         setError(result.error);
       }
     } catch (err) {
+      console.error('Signup form submission failed:', err);
       setError('An unexpected error occurred');
     } finally {
       setLoading(false);
@@ -91,6 +92,7 @@ const Signup = () => {
         setError(data.message || 'Failed to send OTP');
       }
     } catch (err) {
+      console.error('OTP request failed:', err);
       setError('Failed to send OTP. Please try again.');
     } finally {
       setLoading(false);
@@ -130,6 +132,7 @@ const Signup = () => {
         setError(data.message || 'Invalid OTP');
       }
     } catch (err) {
+      console.error('OTP signup failed:', err);
       setError('Signup failed. Please try again.');
     } finally {
       setLoading(false);

@@ -1,6 +1,7 @@
 import { useState } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
-import { useAuth } from '../../contexts/AuthContext';
+import { useAuth } from '../../contexts/useAuth';
+import GoogleSignInButton from '../../components/GoogleAuth/GoogleSignInButton';
 import styles from './Auth.module.scss';
 
 const Login = () => {
@@ -30,6 +31,7 @@ const Login = () => {
         setError(result.error);
       }
     } catch (err) {
+      console.error('Password login failed:', err);
       setError('An unexpected error occurred');
     } finally {
       setLoading(false);
@@ -64,6 +66,7 @@ const Login = () => {
         setError(data.message || 'Failed to send OTP');
       }
     } catch (err) {
+      console.error('OTP login request failed:', err);
       setError('Failed to send OTP. Please try again.');
     } finally {
       setLoading(false);
@@ -99,6 +102,7 @@ const Login = () => {
         setError(data.message || 'Invalid OTP');
       }
     } catch (err) {
+      console.error('OTP verification failed:', err);
       setError('Login failed. Please try again.');
     } finally {
       setLoading(false);
@@ -177,6 +181,12 @@ const Login = () => {
             </button>
           </form>
         )}
+
+        <div className={styles.authDivider}>
+          <span>OR</span>
+        </div>
+
+        <GoogleSignInButton mode="signin" />
 
         <div className={styles.authActions}>
           {!showOtp && (

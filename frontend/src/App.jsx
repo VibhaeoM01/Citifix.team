@@ -9,6 +9,7 @@ import Signup from './pages/Auth/Signup'
 import ComplaintForm from './pages/Complaint/ComplaintForm'
 import AdminDashboard from './pages/Admin/AdminDashboard'
 import ProtectedRoute from './components/ProtectedRoute/ProtectedRoute'
+import AdminRoute from './components/ProtectedRoute/AdminRoute'
 import './App.css'
 import AdminSecret from './pages/Auth/AdminSecret'
 import AdminRegister from './pages/Auth/AdminRegister'
@@ -45,12 +46,12 @@ function AppRoutes() {
         <Route 
           path="/admin" 
           element={
-            <ProtectedRoute adminOnly>
+            <AdminRoute>
               <AdminDashboard />
-            </ProtectedRoute>
+            </AdminRoute>
           } 
         />
-        <Route path="/admin/:dept" element={<ProtectedRoute adminOnly><AdminDeptDashboard /></ProtectedRoute>} />
+        <Route path="/admin/:dept" element={<AdminRoute><AdminDeptDashboard /></AdminRoute>} />
       </Routes>
     </>
   );

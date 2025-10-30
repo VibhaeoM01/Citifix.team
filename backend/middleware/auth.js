@@ -5,51 +5,79 @@ const Admin = require('../models/Admin');
 // Middleware to verify JWT token
 const authenticateToken = async (req, res, next) => {
   try {
+    console.log('\n=== Authentication Process ===');
     const authHeader = req.headers['authorization'];
+    console.log('Auth header exists:', !!authHeader);
+    
     const token = authHeader && authHeader.split(' ')[1]; // Bearer TOKEN
+    console.log('Token exists:', !!token);
 
     if (!token) {
-      return res.status(401).json({ message: 'Access token required' });
+      return res.status(401).json({ 
+        message: 'Failed to mark complaint as noted',
+        error: 'Access token required' 
+      });
     }
 
+    console.log('Verifying token...');
     const decoded = jwt.verify(token, process.env.JWT_SECRET || 'your-secret-key');
-    console.log('DEBUG decoded JWT:', decoded);
+    console.log('Token decoded successfully. User type:', decoded.userId ? 'User' : 'Admin');
+    
     let user = null;
     // Support both user and admin tokens
     if (decoded.userId) {
       user = await User.findById(decoded.userId).select('-password');
-      console.log('DEBUG User lookup:', user);
+      console.log('Regular user found:', !!user);
     } else if (decoded.adminId) {
       user = await Admin.findById(decoded.adminId).select('-password');
-      console.log('DEBUG Admin lookup:', user);
+      console.log('Admin user found:', !!user);
     }
 
     if (!user) {
-      console.log('DEBUG No user/admin found for token');
-      return res.status(401).json({ message: 'Invalid token' });
+      console.log('No user/admin found for token');
+      return res.status(401).json({ 
+        message: 'Failed to mark complaint as noted',
+        error: 'Invalid token - User not found'
+      });
     }
 
     req.user = user;
+    console.log('Authentication successful');
     next();
   } catch (error) {
+    console.error('Authentication error:', {
+      name: error.name,
+      message: error.message,
+      stack: error.stack
+    });
+
     if (error.name === 'JsonWebTokenError') {
-      return res.status(401).json({ message: 'Invalid token' });
+      return res.status(401).json({ 
+        message: 'Failed to mark complaint as noted',
+        error: 'Invalid authentication token'
+      });
     }
     if (error.name === 'TokenExpiredError') {
-      return res.status(401).json({ message: 'Token expired' });
+      return res.status(401).json({ 
+        message: 'Failed to mark complaint as noted',
+        error: 'Authentication token has expired'
+      });
     }
-    return res.status(500).json({ message: 'Authentication error' });
+    return res.status(500).json({ 
+      message: 'Failed to mark complaint as noted',
+      error: 'Authentication error: ' + error.message
+    });
   }
 };
 
-// Middleware to check if user is admin
+// Middleware to check if user is admin or staff
 const requireAdmin = (req, res, next) => {
   if (!req.user) {
-    return res.status(401).json({ message: 'Authentication required' });
+    return res.status(401).json({ error: 'Authentication required' });
   }
 
-  if (req.user.role !== 'admin') {
-    return res.status(403).json({ message: 'Admin access required' });
+  if (!['admin', 'staff'].includes(req.user.role)) {
+    return res.status(403).json({ error: 'Access denied' });
   }
 
   next();

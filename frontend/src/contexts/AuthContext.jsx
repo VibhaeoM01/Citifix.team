@@ -1,16 +1,7 @@
-import { createContext, useContext, useState, useEffect } from 'react';
+import { useState, useEffect } from 'react';
 import axios from 'axios';
 import jwtDecode from 'jwt-decode';
-
-const AuthContext = createContext();
-
-export const useAuth = () => {
-  const context = useContext(AuthContext);
-  if (!context) {
-    throw new Error('useAuth must be used within an AuthProvider');
-  }
-  return context;
-};
+import AuthContext from './AuthContextBase';
 
 export const AuthProvider = ({ children }) => {
   const [user, setUser] = useState(null);
@@ -43,12 +34,26 @@ export const AuthProvider = ({ children }) => {
         const decoded = jwtDecode(adminToken);
         const currentTime = Date.now() / 1000;
         if (decoded.exp > currentTime) {
-          setAdmin(decoded);
+          let storedAdmin = null;
+          try {
+            const rawProfile = localStorage.getItem('adminProfile');
+            storedAdmin = rawProfile ? JSON.parse(rawProfile) : null;
+          } catch (parseError) {
+            console.warn('Failed to parse admin profile from storage:', parseError);
+          }
+
+          const fallbackAdmin = storedAdmin || (decoded.adminId ? {
+            id: decoded.adminId,
+            role: 'admin'
+          } : decoded);
+
+          setAdmin(fallbackAdmin);
           axios.defaults.headers.common['Authorization'] = `Bearer ${adminToken}`;
         } else {
           logoutAdmin();
         }
       } catch (error) {
+        console.warn('Admin token decoding failed:', error);
         logoutAdmin();
       }
     } else {
@@ -79,9 +84,14 @@ export const AuthProvider = ({ children }) => {
     try {
       const response = await axios.post('/api/auth/admin-login', { email, password });
       const { token: newToken, admin: adminData } = response.data;
+      if (!adminData) {
+        throw new Error('Missing admin details in response');
+      }
+
       setAdminToken(newToken);
       setAdmin(adminData);
       localStorage.setItem('adminToken', newToken);
+      localStorage.setItem('adminProfile', JSON.stringify(adminData));
       axios.defaults.headers.common['Authorization'] = `Bearer ${newToken}`;
       return { success: true, admin: adminData };
     } catch (error) {
@@ -137,6 +147,7 @@ export const AuthProvider = ({ children }) => {
     setAdmin(null);
     setAdminToken(null);
     localStorage.removeItem('adminToken');
+    localStorage.removeItem('adminProfile');
     delete axios.defaults.headers.common['Authorization'];
   };
 
@@ -169,4 +180,4 @@ export const AuthProvider = ({ children }) => {
       {children}
     </AuthContext.Provider>
   );
-}; 
+};

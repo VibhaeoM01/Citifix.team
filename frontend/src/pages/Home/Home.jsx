@@ -1,12 +1,37 @@
 
 import { Link } from 'react-router-dom';
-import { useAuth } from '../../contexts/AuthContext';
+import { useAuth } from '../../contexts/useAuth';
 import { useTranslation } from 'react-i18next';
 import styles from './Home.module.scss';
 
 const Home = () => {
-  const { user } = useAuth();
+  const { user, admin, adminToken, token: userToken } = useAuth();
   const { t } = useTranslation();
+
+  const handleClearAllComplaints = async () => {
+    if (!window.confirm('⚠️ WARNING: This will permanently delete ALL complaints. Are you sure?')) {
+      return;
+    }
+    
+    try {
+      const response = await fetch('/api/complaints/admin/clear-all', {
+        method: 'DELETE',
+        headers: {
+          'Authorization': `Bearer ${adminToken || userToken}`,
+        }
+      });
+
+      const data = await response.json();
+      if (response.ok) {
+        alert(`Successfully cleared ${data.count} complaints`);
+      } else {
+        throw new Error(data.message || 'Failed to clear complaints');
+      }
+    } catch (error) {
+      console.error('Error clearing complaints:', error);
+      alert('Failed to clear complaints: ' + error.message);
+    }
+  };
 
   const features = [
     {
@@ -43,6 +68,20 @@ const Home = () => {
 
   return (
     <div className={styles.home}>
+      {/* Admin Controls */}
+      {admin && ['admin', 'staff'].includes(admin.role) && (
+        <div className={styles.adminControls}>
+          <div className={styles.container}>
+            <button
+              onClick={handleClearAllComplaints}
+              className={styles.clearButton}
+            >
+              🗑️ Clear All Complaints
+            </button>
+          </div>
+        </div>
+      )}
+
       {/* Hero Section */}
       <section className={styles.hero}>
         <div className={styles.container}>

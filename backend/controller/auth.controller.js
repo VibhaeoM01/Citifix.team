@@ -36,7 +36,8 @@ exports.registerAdmin = async (req, res) => {
         id: admin._id,
         name: admin.name,
         email: admin.email,
-        department: admin.department
+        department: admin.department,
+        role: admin.role
       }
     });
   } catch (error) {
@@ -68,7 +69,8 @@ exports.loginAdmin = async (req, res) => {
         id: admin._id,
         name: admin.name,
         email: admin.email,
-        department: admin.department
+        department: admin.department,
+        role: admin.role
       }
     });
   } catch (error) {

@@ -1,10 +1,21 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useCallback } from 'react';
+import { useNavigate } from 'react-router-dom';
+import { useAuth } from '../../contexts/useAuth';
 import styles from './AdminDashboard.module.scss';
 
 const AdminDashboard = () => {
   const [complaints, setComplaints] = useState([]);
   const [view, setView] = useState('list'); // 'list' or 'map'
   const [loading, setLoading] = useState(true);
+  const { admin, adminToken, token: userToken } = useAuth();
+  const navigate = useNavigate();
+
+  // Check if user has admin/staff privileges
+  useEffect(() => {
+    if (!admin || !['admin', 'staff'].includes(admin.role)) {
+      navigate('/admin/login', { replace: true });
+    }
+  }, [admin, navigate]);
   const [stats, setStats] = useState({
     total: 0,
     pending: 0,
@@ -12,61 +23,140 @@ const AdminDashboard = () => {
     highUrgency: 0
   });
 
-  useEffect(() => {
-    fetchComplaints();
-    fetchStats();
-  }, []);
-
-  const fetchComplaints = async () => {
+  const fetchComplaints = useCallback(async () => {
     try {
+      const authToken = adminToken || userToken;
+      const headers = {};
+      if (authToken) {
+        headers['Authorization'] = `Bearer ${authToken}`;
+      }
+
       const response = await fetch('/api/admin/complaints', {
-        headers: {
-          'Authorization': `Bearer ${localStorage.getItem('token')}`
-        }
+        headers
       });
       const data = await response.json();
-      setComplaints(data.complaints);
+      setComplaints(Array.isArray(data.complaints) ? data.complaints : []);
     } catch (error) {
       console.error('Error fetching complaints:', error);
     } finally {
       setLoading(false);
     }
-  };
+  }, [adminToken, userToken]);
 
-  const fetchStats = async () => {
+  const fetchStats = useCallback(async () => {
     try {
+      const authToken = adminToken || userToken;
+      const headers = {};
+      if (authToken) {
+        headers['Authorization'] = `Bearer ${authToken}`;
+      }
+
       const response = await fetch('/api/admin/stats', {
-        headers: {
-          'Authorization': `Bearer ${localStorage.getItem('token')}`
-        }
+        headers
       });
       const data = await response.json();
-      setStats(data);
+      setStats({
+        total: data?.total ?? 0,
+        pending: data?.pending ?? 0,
+        resolved: data?.resolved ?? 0,
+        highUrgency: data?.highUrgency ?? 0
+      });
     } catch (error) {
       console.error('Error fetching stats:', error);
     }
-  };
+  }, [adminToken, userToken]);
+
+  useEffect(() => {
+    fetchComplaints();
+    fetchStats();
+  }, [fetchComplaints, fetchStats]);
 
   const handleMarkAsNoted = async (complaintId) => {
     try {
-      const response = await fetch(`/api/admin/complaints/${complaintId}/noted`, {
-        method: 'PUT',
+      // Debug logging
+      console.log('=== Start Mark as Noted Process ===');
+      console.log('ComplaintId:', complaintId);
+      
+      // Find the complaint in the current state
+      const complaint = complaints.find(c => c._id === complaintId);
+      console.log('Found complaint:', complaint);
+      
+      if (!complaint) {
+        throw new Error('Complaint not found in current state');
+      }
+
+      // Check if complaint is already noted
+      if (complaint.status === 'noted') {
+        alert('This complaint has already been marked as noted.');
+        return;
+      }
+
+      const apiUrl = import.meta.env.VITE_API_URL || '/api';
+      console.log('API URL:', apiUrl);
+
+  const authToken = adminToken || userToken;
+      console.log('Authenticated with admin token:', !!adminToken);
+  console.log('Authenticated with user token:', !!userToken);
+
+      if (!authToken) {
+        throw new Error('Authentication token not found');
+      }
+
+      console.log('Sending request to mark complaint as noted...');
+      const response = await fetch(`${apiUrl}/complaints/${complaintId}/mark-noted`, {
+        method: 'PATCH',
         headers: {
-          'Authorization': `Bearer ${localStorage.getItem('token')}`
-        }
+          'Authorization': `Bearer ${authToken}`,
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify({
+          adminNotes: 'Complaint has been noted and assigned for action'
+        })
       });
 
-      if (response.ok) {
-        // Update the complaint status locally
-        setComplaints(complaints.map(complaint => 
-          complaint._id === complaintId 
-            ? { ...complaint, status: 'noted' }
-            : complaint
-        ));
-        fetchStats(); // Refresh stats
+      console.log('Response status:', response.status);
+      console.log('Response ok:', response.ok);
+      
+      const data = await response.json();
+      console.log('Server response data:', data);
+
+      if (!response.ok) {
+        // Enhanced error handling
+        const errorMessage = data.error || data.message || 'Unknown server error';
+        console.error('Server returned error:', {
+          status: response.status,
+          error: errorMessage,
+          data: data
+        });
+        throw new Error(errorMessage);
       }
+
+      // Update the complaint status locally
+      setComplaints(complaints.map(c => 
+        c._id === complaintId 
+          ? { ...c, status: 'noted', adminNotes: data.complaint.adminNotes }
+          : c
+      ));
+      
+      // Show detailed success message
+      const emailStatus = data.emailNotification?.sent
+        ? '✅ Email notification sent to user'
+        : '⚠️ Email notification failed: ' + (data.emailNotification?.message || 'Unknown error');
+      
+      alert(`Complaint successfully marked as noted\n${emailStatus}`);
+      
+      // Refresh stats
+      fetchStats();
+      
     } catch (error) {
-      console.error('Error marking as noted:', error);
+      console.error('Error marking complaint as noted:', error);
+      
+      // Show more detailed error message
+      const errorMessage = error.message === 'Failed to fetch'
+        ? 'Network error: Please check your internet connection'
+        : error.message || 'An unexpected error occurred';
+      
+      alert(`Error: ${errorMessage}\nPlease try again or contact support if the problem persists.`);
     }
   };
 
@@ -81,10 +171,10 @@ const AdminDashboard = () => {
 
   const getStatusColor = (status) => {
     switch (status) {
-      case 'pending': return '#ea580c';
-      case 'noted': return '#3b82f6';
-      case 'resolved': return '#059669';
-      default: return '#64748b';
+      case 'pending': return '#ea580c'; // Orange/yellow for pending
+      case 'noted': return '#059669'; // Green for noted (acknowledged)
+      case 'resolved': return '#16a34a'; // Darker green for resolved
+      default: return '#64748b'; // Gray for other statuses
     }
   };
 
@@ -96,10 +186,62 @@ const AdminDashboard = () => {
     );
   }
 
+  const handleClearAllComplaints = async () => {
+    if (!window.confirm('⚠️ WARNING: This will permanently delete ALL complaints. Are you sure?')) {
+      return;
+    }
+    
+    try {
+      const response = await fetch('/api/complaints/admin/clear-all', {
+        method: 'DELETE',
+        headers: {
+          'Authorization': `Bearer ${adminToken || userToken}`,
+        }
+      });
+
+      const data = await response.json();
+      if (response.ok) {
+        alert(`Successfully cleared ${data.count} complaints`);
+        // Refresh the complaints list and stats
+        fetchComplaints();
+        fetchStats();
+      } else {
+        throw new Error(data.message || 'Failed to clear complaints');
+      }
+    } catch (error) {
+      console.error('Error clearing complaints:', error);
+      alert('Failed to clear complaints: ' + error.message);
+    }
+  };
+
   return (
     <div className={styles.adminContainer}>
       <div className={styles.adminHeader}>
-        <h1 className={styles.adminTitle}>Admin Dashboard</h1>
+        <div className={styles.headerTop}>
+          <h1 className={styles.adminTitle}>Admin Dashboard</h1>
+          
+          {/* Clear All Complaints Button - Moved to top */}
+          {['admin', 'staff'].includes(admin?.role) && (
+            <button
+              onClick={handleClearAllComplaints}
+              style={{
+                backgroundColor: '#dc2626',
+                color: 'white',
+                padding: '0.75rem 1.5rem',
+                borderRadius: '8px',
+                border: 'none',
+                cursor: 'pointer',
+                fontWeight: '600',
+                display: 'flex',
+                alignItems: 'center',
+                gap: '0.5rem'
+              }}
+            >
+              🗑️ Clear All Complaints
+            </button>
+          )}
+        </div>
+
         <div className={styles.viewToggle}>
           <button
             className={`${styles.toggleBtn} ${view === 'list' ? styles.active : ''}`}
@@ -181,6 +323,7 @@ const AdminDashboard = () => {
                 </div>
               </div>
             ))}
+            {/* Remove the bottom clear button since we moved it to the top */}
           </div>
         </div>
       ) : (

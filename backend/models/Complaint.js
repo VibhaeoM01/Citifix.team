@@ -21,6 +21,13 @@ const complaintSchema = new mongoose.Schema({
     required: [true, 'Location is required'],
     trim: true
   },
+  email: {
+    type: String,
+    required: [true, 'Email is required'],
+    trim: true,
+    lowercase: true,
+    match: [/^\w+([.-]?\w+)*@\w+([.-]?\w+)*(\.\w{2,3})+$/, 'Please enter a valid email address']
+  },
   coordinates: {
     lat: Number,
     lng: Number
@@ -73,6 +80,11 @@ const complaintSchema = new mongoose.Schema({
     type: mongoose.Schema.Types.ObjectId,
     ref: 'User'
   },
+  notedBy: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'User'
+  },
+  notedAt: Date,
   createdAt: {
     type: Date,
     default: Date.now

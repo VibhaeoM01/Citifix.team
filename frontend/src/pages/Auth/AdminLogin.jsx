@@ -1,7 +1,7 @@
 
 import { useState, useEffect } from 'react';
 import { useNavigate, useLocation } from 'react-router-dom';
-import { useAuth } from '../../contexts/AuthContext';
+import { useAuth } from '../../contexts/useAuth';
 import styles from './AdminLogin.module.scss';
 
 const AdminLogin = () => {
@@ -51,6 +51,7 @@ const AdminLogin = () => {
         setError(loginError || 'Invalid credentials or not an admin/staff');
       }
     } catch (err) {
+      console.error('Admin login failed:', err);
       setError('Server error. Please try again.');
     } finally {
       setLoading(false);
