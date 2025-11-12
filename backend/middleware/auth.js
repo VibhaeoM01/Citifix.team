@@ -25,12 +25,27 @@ const authenticateToken = async (req, res, next) => {
     
     let user = null;
     // Support both user and admin tokens
+    console.log('Decoded token:', {
+      userId: decoded.userId,
+      adminId: decoded.adminId,
+      role: decoded.role,
+      department: decoded.department
+    });
+    
     if (decoded.userId) {
       user = await User.findById(decoded.userId).select('-password');
-      console.log('Regular user found:', !!user);
+      console.log('Regular user found:', user ? {
+        id: user._id,
+        role: user.role,
+        department: user.department
+      } : null);
     } else if (decoded.adminId) {
       user = await Admin.findById(decoded.adminId).select('-password');
-      console.log('Admin user found:', !!user);
+      console.log('Admin user found:', user ? {
+        id: user._id,
+        role: user.role,
+        department: user.department
+      } : null);
     }
 
     if (!user) {

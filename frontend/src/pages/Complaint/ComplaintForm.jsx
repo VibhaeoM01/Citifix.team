@@ -128,55 +128,94 @@ const ComplaintForm = () => {
         hasUser: !!user
       });
 
-      // Create FormData for ML processing
-      const formDataObj = new FormData();
-      formDataObj.append('photo', photo);
-      formDataObj.append('description', formData.description);
-      formDataObj.append('location', formData.location);
-      formDataObj.append('email', formData.email);
-      
       // Step 1: ML Processing
       console.log('Starting ML processing...');
       setMlProcessing(true);
       
       const apiUrl = import.meta.env.VITE_API_URL || '/api';
-        const mlResponse = await fetch(`${apiUrl}/complaints/analyze-image`, {
-          method: 'POST',
-          headers: {
-            'Authorization': `Bearer ${token}`,
-            'Accept': 'application/json'
-          },
-          body: formDataObj
-        });
+      console.log('Using API URL:', apiUrl);
+      
+      // Create FormData with the correct field name 'photo' for the image
+      const requestData = new FormData();
+      requestData.append('photo', photo);  // Use 'photo' consistently
+      requestData.append('description', formData.description || '');
+      requestData.append('location', formData.location || '');
+      requestData.append('email', formData.email || '');
+      
+      // Log the FormData contents for debugging
+      console.log('FormData contents:', {
+        hasFile: requestData.has('photo'),
+        fileName: photo.name,
+        fileSize: photo.size,
+        fileType: photo.type,
+        description: formData.description || 'No description'
+      });
 
-        let mlResponseText;
-        try {
-          mlResponseText = await mlResponse.text();
-          console.log('ML Response text:', mlResponseText);
+      const mlResponse = await fetch(`${apiUrl}/complaints/analyze-image`, {
+        method: 'POST',
+        headers: {
+          'Authorization': `Bearer ${token}`,
+          'Accept': 'application/json'
+          // Remove Content-Type header to let browser set it with boundary
+        },
+        body: requestData
+      });
 
-          // Check if response text is empty
-          if (!mlResponseText.trim()) {
-            throw new Error('ML API returned empty response');
-          }
-
-          // Check for specific error status codes
-          if (mlResponse.status === 429) {
-            throw new Error('System is busy. Please try again in a few minutes.');
-          } else if (mlResponse.status === 413) {
-            throw new Error('Image file is too large. Please use a smaller image (max 10MB).');
-          } else if (mlResponse.status === 415) {
-            throw new Error('Invalid image format. Please use JPG, JPEG, or PNG format.');
-          } else if (!mlResponse.ok) {
-            throw new Error(`ML Processing failed: ${mlResponseText}`);
-          }
-        } catch (err) {
-          console.error('Error processing ML response:', err);
-          throw new Error(`Image analysis failed: ${err.message}. Please try again or use a different image.`);
-        }      if (!mlResponse.ok) {
-        throw new Error(`ML Processing failed: ${mlResponseText}`);
+      // Check HTTP status first
+      if (!mlResponse.ok) {
+        if (mlResponse.status === 429) {
+          throw new Error('System is busy. Please try again in a few minutes.');
+        } else if (mlResponse.status === 413) {
+          throw new Error('Image file is too large. Please use a smaller image (max 10MB).');
+        } else if (mlResponse.status === 415) {
+          throw new Error('Invalid image format. Please use JPG, JPEG, or PNG format.');
+        }
       }
 
+      let mlResponseText;
       let mlData;
+      
+      try {
+        mlResponseText = await mlResponse.text();
+        console.log('ML Response text:', mlResponseText);
+
+        // Check if response text is empty
+        if (!mlResponseText.trim()) {
+          throw new Error('ML API returned empty response');
+        }
+
+        // Parse the response
+        mlData = JSON.parse(mlResponseText);
+        console.log('\n=== ML RESPONSE DEBUG ===');
+        console.log('Raw ML response:', mlResponseText);
+        console.log('Parsed ML data:', mlData);
+        
+        // Handle different response formats
+        if (mlData.error) {
+          throw new Error(mlData.error);
+        }
+        
+        if (mlData.success === false) {
+          throw new Error(mlData.message || 'Analysis failed');
+        }
+
+        // Extract results from any of the possible locations
+        const results = mlData.results || mlData.mlResults || (mlData.success ? mlData : null);
+        
+        if (!results) {
+          console.error('Missing results in response:', mlData);
+          throw new Error('Could not find analysis results in response');
+        }
+
+        console.log('Extracted results:', results);
+        console.log('========================\n');
+        
+        // Set ML results instead of returning them
+        setMlResults(results);
+      } catch (err) {
+        console.error('Error processing ML response:', err);
+        throw new Error(`Image analysis failed: ${err.message}. Please try again or use a different image.`);
+      }
       try {
         mlData = JSON.parse(mlResponseText);
         console.log('\n=== ML RESPONSE DEBUG ===');
@@ -206,15 +245,15 @@ const ComplaintForm = () => {
       console.log('Submitting complaint with ML results:', mlResultsRaw);
       
       // Add ML results to form data
-      formDataObj.append('category', categoryFromML);
-      formDataObj.append('urgency', urgencyFromML);
+      requestData.append('category', categoryFromML);
+      requestData.append('urgency', urgencyFromML);
 
       const submitResponse = await fetch(`${apiUrl}/complaints`, {
         method: 'POST',
         headers: {
           'Authorization': `Bearer ${token}`
         },
-        body: formDataObj
+        body: requestData
       });
 
       let responseData;
@@ -266,24 +305,24 @@ const ComplaintForm = () => {
         setMlResults(formattedResults);
       }
 
-      // Success! Reset form and show success message
-      setSuccess('Your complaint has been submitted successfully! Redirecting...');
+      // Success! Show success message
+      setSuccess('Your complaint has been submitted successfully! You will be redirected in 5 seconds...');
       console.log('Form submission completed successfully');
       
-      // Reset form
-      setFormData({
-        description: '',
-        location: '',
-        email: ''
-      });
-      setPhoto(null);
-      setPhotoPreview(null);
-      
-      // Redirect after a delay
+      // Wait longer before resetting form and redirecting to allow viewing results
       setTimeout(() => {
+        // Reset form
+        setFormData({
+          description: '',
+          location: '',
+          email: ''
+        });
+        setPhoto(null);
+        setPhotoPreview(null);
+        
         console.log('Redirecting to home...');
         navigate('/');
-      }, 3000);
+      }, 5000);
 
     } catch (err) {
       console.error('Form submission error:', err);
@@ -413,24 +452,14 @@ const ComplaintForm = () => {
           </div>
         )}
 
-        {/* ML Results Display */}
+        {/* Final evaluated category (do not expose raw AI analysis) */}
         {mlResults && (
           <div className={styles.mlResults}>
-            <h3>{t('aiAnalysisResults')}</h3>
+            <h3>{t('evaluationResult') ?? 'Evaluation'}</h3>
             <div className={styles.mlCards}>
               <div className={styles.mlCard}>
-                <span className={styles.mlLabel}>{t('category')}:</span>
+                <span className={styles.mlLabel}>{t('finalCategory') ?? 'Final category'}:</span>
                 <span className={styles.mlValue}>{mlResults.category}</span>
-              </div>
-              <div className={styles.mlCard}>
-                <span className={styles.mlLabel}>{t('urgency')}:</span>
-                <span className={`${styles.mlValue} ${styles[`urgency-${(mlResults.urgency || 'medium').toLowerCase()}`]}`}>
-                  {mlResults.urgency || 'Medium'}
-                </span>
-              </div>
-              <div className={styles.mlCard}>
-                <span className={styles.mlLabel}>{t('imageCaption')}:</span>
-                <span className={styles.mlValue}>{mlResults.caption}</span>
               </div>
             </div>
           </div>

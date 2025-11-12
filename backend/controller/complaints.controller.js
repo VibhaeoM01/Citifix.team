@@ -80,12 +80,17 @@ exports.getComplaintsByDepartment = async (req, res) => {
   try {
     console.log('=== getComplaintsByDepartment START ===');
     console.log('User:', JSON.stringify(req.user, null, 2));
+    console.log('Auth header:', req.headers.authorization);
     
     // Check authentication and role
     if (!req.user) {
       console.log('No user found in request');
       return res.status(401).json({ message: 'Authentication required' });
     }
+    
+    // Debug log: Check user role and department
+    console.log('User Role:', req.user.role);
+    console.log('User Department:', req.user.department);
 
     if (!['admin', 'staff'].includes(req.user.role)) {
       console.log('Invalid role:', req.user.role);
@@ -106,21 +111,12 @@ exports.getComplaintsByDepartment = async (req, res) => {
     }
     
     // Define the mapping between departments and their corresponding categories
-    const categoryMap = {
-      'Roads': ['Road Issues', 'Potholes'],
-      'Water': ['Water Supply', 'Water Issues'],
-      'Electricity': ['Electricity', 'Power Issues'],
-      'Sanitation': ['Sanitation', 'Garbage', 'Waste Management'],
-      'Other': ['Other']
-    };
-
-    // Define the mapping between departments and their corresponding categories
     const departmentToCategories = {
       'Roads': ['Road Issues', 'Traffic Management'],
       'Water': ['Water Supply'],
       'Electricity': ['Electricity', 'Street Lighting'],
-      'Sanitation': ['Sanitation', 'Garbage'],
-      'Other': ['Other', 'Parks & Recreation', 'Public Transport', 'Public Safety']
+      'Sanitation': ['Sanitation'], // Only use Sanitation as the category
+      'Other': ['Other', 'Parks & Recreation', 'Public Transport', 'Public Safety', 'Garbage'] // Move Garbage to Other for backward compatibility
     };
 
     // Get the corresponding categories for the department
@@ -130,7 +126,19 @@ exports.getComplaintsByDepartment = async (req, res) => {
       return res.status(400).json({ message: 'Invalid department' });
     }
 
-    console.log('Target categories for department:', targetCategories);
+    console.log('Department mapping:', {
+      requestedDept: dept,
+      targetCategories,
+      allDeptMappings: departmentToCategories
+    });
+
+    // First check how many complaints exist in total
+    const allComplaints = await Complaint.find().lean();
+    console.log('All complaints in system:', allComplaints.map(c => ({
+      id: c._id,
+      category: c.category,
+      status: c.status
+    })));
 
     // For staff members, check if they belong to the requested department
     if (req.user.role === 'staff' && req.user.department !== dept) {
@@ -138,6 +146,14 @@ exports.getComplaintsByDepartment = async (req, res) => {
       return res.status(403).json({ message: 'Access denied - wrong department' });
     }
 
+    // Debug log: Query parameters
+    console.log('Query for categories:', targetCategories);
+    
+    // First check if any complaints exist at all
+    const totalComplaints = await Complaint.countDocuments();
+    console.log('Total complaints in database:', totalComplaints);
+    
+    // Then check specifically for the target categories
     const complaints = await Complaint.find({ 
       category: { $in: targetCategories }
     })
@@ -146,6 +162,16 @@ exports.getComplaintsByDepartment = async (req, res) => {
       .lean();
 
     console.log(`Found ${complaints.length} complaints for department ${dept}`);
+    
+    // Debug log: Show all found complaints details
+    complaints.forEach(complaint => {
+      console.log('Found complaint:', {
+        id: complaint._id,
+        category: complaint.category,
+        status: complaint.status,
+        created: complaint.createdAt
+      });
+    });
 
     // Add photo URL prefix if needed
     const processedComplaints = complaints.map(c => ({
@@ -186,22 +212,69 @@ exports.submitComplaint = async (req, res) => {
     const categoryMapping = {
       'pothole': 'Road Issues',
       'garbage': 'Sanitation',
+      'garbage_overflowing': 'Sanitation', // Add mapping for garbage_overflowing
       'manhole': 'Road Issues'
     };
+    
+    console.log('Category Mapping:', categoryMapping);
 
     // Get the predicted class and map it to a category
     const predictedClass = mlResults.predicted_class || mlResults.detectedClass;
     console.log('ML Predicted Class:', predictedClass);
 
-    // Map the ML prediction to a proper category
-    mlResults.predictedCategory = categoryMapping[predictedClass] || 'Other';
-    console.log('Mapped Category:', mlResults.predictedCategory);
-
-    // Get the uploaded filename to help with classification
+    // Get the uploaded filename and description (lowercased) to help with fallback classification
     const filename = req.file.originalname ? req.file.originalname.toLowerCase() : '';
     const desc = description ? description.toLowerCase() : '';
 
-    // Override classification if filename/description contains specific keywords
+    // Map the ML prediction to a proper category (initial mapping)
+    const mappedCategory = categoryMapping[predictedClass] || 'Other';
+    console.log('Mapped Category (from ML class):', mappedCategory);
+
+    // Confidence-based fallback: if confidence < threshold, default to Other
+    // unless description/filename contains keywords indicating Sanitation or Road Issues.
+    const CONFIDENCE_THRESHOLD = 0.75;
+    let confidence = 0;
+    try {
+      confidence = typeof mlResults.confidence === 'string' ? parseFloat(mlResults.confidence) : (mlResults.confidence || 0);
+    } catch (e) {
+      confidence = 0;
+    }
+    if (Number.isNaN(confidence)) confidence = 0;
+
+    console.log('ML confidence:', confidence, 'threshold:', CONFIDENCE_THRESHOLD);
+
+    // Define keyword lists for fallback
+    const sanitationKeywords = ['garbage', 'garbage overflow', 'garbage_overflowing', 'dustbin', 'dust bin', 'trash', 'smell', 'odor', 'odour', 'overflow', 'dump'];
+    const roadKeywords = ['pothole', 'pot hole', 'manhole', 'man hole', 'hole', 'holes', 'vehicle', 'car', 'bus', 'truck', 'road', 'street', 'crack'];
+
+    // Helper to check keywords
+    const containsAny = (text, keywords) => keywords.some(k => text.includes(k));
+
+    if (confidence < CONFIDENCE_THRESHOLD) {
+      console.log('Low confidence detected — applying keyword fallback');
+      // default to Other
+      mlResults.predictedCategory = 'Other';
+
+      // If description or filename contains sanitation keywords -> Sanitation
+      if (containsAny(desc, sanitationKeywords) || containsAny(filename, sanitationKeywords)) {
+        console.log('Fallback: matched sanitation keywords in description/filename');
+        mlResults.predictedCategory = 'Sanitation';
+        mlResults.caption = mlResults.caption || 'Likely sanitation issue based on description';
+      } else if (containsAny(desc, roadKeywords) || containsAny(filename, roadKeywords)) {
+        console.log('Fallback: matched road keywords in description/filename');
+        mlResults.predictedCategory = 'Road Issues';
+        mlResults.caption = mlResults.caption || 'Likely road issue based on description';
+      } else {
+        console.log('Fallback: no keywords matched, defaulting to Other');
+      }
+    } else {
+      // High confidence — trust mapping + mapped category
+      mlResults.predictedCategory = mappedCategory;
+    }
+
+    console.log('Category after confidence/keyword logic:', mlResults.predictedCategory);
+
+    // Existing strong override for explicit pothole/road indicators (keep urgency high)
     if (
       filename.includes('pothole') || 
       desc.includes('pothole') || 
@@ -209,18 +282,22 @@ exports.submitComplaint = async (req, res) => {
       desc.includes('road') || 
       desc.includes('street damage')
     ) {
-      console.log('OVERRIDE: Detected road issue keywords in filename or description');
+      console.log('OVERRIDE: Detected strong road issue keywords in filename or description — forcing Road Issues / high urgency');
       mlResults.detectedClass = 'pothole';
       mlResults.predictedCategory = 'Road Issues';
       mlResults.predictedUrgency = 'high';
-      mlResults.caption = 'Image appears to show a pothole';
+      mlResults.caption = mlResults.caption || 'Image appears to show a pothole or road damage';
     }
-    
-    console.log('FINAL CATEGORY:', mlResults.predictedCategory);
 
     // Ensure we have a valid category
     const validCategory = mlResults.predictedCategory || 'Other';
     console.log('Final Category:', validCategory);
+    
+    // Map predicted category to correct department categories
+    let finalCategory = validCategory;
+    if (finalCategory === 'Garbage') {
+        finalCategory = 'Sanitation';
+    }
 
     // Merge ML results into complaint
     const complaint = new Complaint({
@@ -229,11 +306,11 @@ exports.submitComplaint = async (req, res) => {
       description,
       location,
       email: req.body.email || req.user.email, // Use provided email or fallback to user's email
-      category: validCategory,
+      category: finalCategory,
       urgency: mlResults.predictedUrgency || 'high',
       mlResults: {
         caption: mlResults.caption,
-        predictedCategory: validCategory,
+        predictedCategory: finalCategory,
         predictedUrgency: mlResults.predictedUrgency || 'high',
         confidence: mlResults.confidence
       }

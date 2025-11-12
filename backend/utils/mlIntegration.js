@@ -46,7 +46,7 @@ const callMLAPI = async (imagePath, description) => {
     // Create form data with validation
     const formData = new FormData();
     const fileStream = fs.createReadStream(imagePath);
-    formData.append('file', fileStream);
+    formData.append('file', fileStream);  // We want to use 'file' here as that's what Flask expects
     if (description) {
       if (typeof description !== 'string') {
         console.warn('Description is not a string, converting...');
@@ -54,6 +54,15 @@ const callMLAPI = async (imagePath, description) => {
       }
       formData.append('description', description);
     }
+    
+    // Log request details for debugging
+    console.log('ML API Request:', {
+      url: `${ML_API_BASE_URL}/predict`,
+      hasFile: !!fileStream,
+      hasDescription: !!description,
+      // form-data package doesn't support entries(), just log the keys we know we added
+      formDataFields: ['file', ...(description ? ['description'] : [])]
+    });
 
     // Test ML API connection with retries (regardless of description)
     let healthCheck = false;
@@ -135,23 +144,35 @@ const callMLAPI = async (imagePath, description) => {
 
   console.log('ML API RAW RESPONSE:', JSON.stringify(respData, null, 2));
     
-  const { predicted_class, confidence, category, priority, caption, predictedCategory: apiPredictedCategory, predictedUrgency: apiPredictedUrgency, uncertain } = respData;
+  // Extract results from nested structure
+  const results = respData.results || respData;
+  const {
+    predicted_class,
+    confidence,
+    category,
+    priority,
+    caption,
+    predictedCategory: apiPredictedCategory,
+    predictedUrgency: apiPredictedUrgency,
+    uncertain
+  } = results;
 
-    // Normalize confidence from API (may arrive as percentage string)
-    let normalizedConfidence = 0.5;
-    if (typeof confidence === 'number' && !Number.isNaN(confidence)) {
-      normalizedConfidence = confidence;
-    } else if (typeof confidence === 'string') {
-      const parsed = parseFloat(confidence.replace(/%/g, ''));
-      if (!Number.isNaN(parsed)) {
-        normalizedConfidence = parsed > 1 ? parsed / 100 : parsed;
-      }
+  // Normalize confidence from API (may arrive as percentage string)
+  let normalizedConfidence = 0.5;
+  if (typeof confidence === 'number' && !Number.isNaN(confidence)) {
+    normalizedConfidence = confidence;
+  } else if (typeof confidence === 'string') {
+    const parsed = parseFloat(confidence.replace(/%/g, ''));
+    if (!Number.isNaN(parsed)) {
+      normalizedConfidence = parsed > 1 ? parsed / 100 : parsed;
     }
-    
-    // Validate ML response
-    if (!predicted_class && !category) {
-      throw new Error('Invalid ML API response: missing classification data');
-    }
+  }
+  
+  // Validate ML response
+  if ((!predicted_class && !category) || !results) {
+    console.error('Invalid ML response structure:', JSON.stringify(respData, null, 2));
+    throw new Error('Invalid ML API response: missing classification data');
+  }
 
     console.log('ML API EXTRACTED VALUES:', {
       predicted_class,

@@ -12,7 +12,8 @@ const Blog = () => {
       excerpt: t('blogPost1Excerpt'),
       date: '2024-01-15',
       author: t('blogPost1Author'),
-      category: t('blogPost1Category')
+      category: t('blogPost1Category'),
+      readMore: 'https://data.europa.eu/en/news-events/news/transforming-urban-living-rise-smart-cities'
     },
     {
       id: 2,
@@ -20,7 +21,8 @@ const Blog = () => {
       excerpt: t('blogPost2Excerpt'),
       date: '2024-01-10',
       author: t('blogPost2Author'),
-      category: t('blogPost2Category')
+      category: t('blogPost2Category'),
+      readMore: 'https://thehagueacademy.com/news/the-role-of-citizen-participation-in-urban-planning/'
     },
     {
       id: 3,
@@ -28,7 +30,8 @@ const Blog = () => {
       excerpt: t('blogPost3Excerpt'),
       date: '2024-01-05',
       author: t('blogPost3Author'),
-      category: t('blogPost3Category')
+      category: t('blogPost3Category'),
+      readMore: 'https://itechdata.ai/how-machine-learning-is-revolutionizing-municipalities-examples-of-smart-solutions/'
     }
   ];
 
@@ -52,7 +55,15 @@ const Blog = () => {
             <p className={styles.blogCardExcerpt}>{post.excerpt}</p>
             <div className={styles.blogCardFooter}>
               <span className={styles.blogAuthor}>{t('by')} {post.author}</span>
-              <button className={styles.readMoreBtn}>{t('readMore')}</button>
+              <a
+                href={post.readMore}
+                target="_blank"
+                rel="noopener noreferrer"
+                className={styles.readMoreBtn}
+                aria-label={`${t('readMore')} ${post.title}`}
+              >
+                {t('readMore')}
+              </a>
             </div>
           </article>
         ))}

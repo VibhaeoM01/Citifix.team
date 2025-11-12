@@ -19,11 +19,15 @@ router.get('/health', (req, res) => {
 // Analyze image route - returns ML prediction without creating complaint
 router.post('/analyze-image', 
   authenticateToken,
-  upload.single('photo'),
+  upload.single('photo'),  // Accept 'photo' field to match frontend
   async (req, res) => {
     try {
+      // Check if file exists
       if (!req.file) {
-        return res.status(400).json({ error: 'Photo is required for analysis' });
+        return res.status(400).json({ 
+          error: 'Image file is required for analysis',
+          success: false 
+        });
       }
 
       const { description } = req.body;
@@ -32,6 +36,8 @@ router.post('/analyze-image',
       console.log('Analyzing image:', {
         filename: req.file.originalname,
         path: req.file.path,
+        size: req.file.size,
+        mimetype: req.file.mimetype,
         description: description || 'No description provided'
       });
 
@@ -41,9 +47,76 @@ router.post('/analyze-image',
         throw new Error('ML service returned empty response');
       }
 
+      // Normalize inputs for keyword checks
+      const filename = req.file.originalname ? req.file.originalname.toLowerCase() : '';
+      const desc = description ? description.toLowerCase() : '';
+
+      // Map ML classes to categories (same mapping used in controller)
+      const categoryMapping = {
+        'pothole': 'Road Issues',
+        'garbage': 'Sanitation',
+        'garbage_overflowing': 'Sanitation',
+        'manhole': 'Road Issues'
+      };
+
+      const predictedClass = mlResults.predicted_class || mlResults.detectedClass;
+      const mappedCategory = categoryMapping[predictedClass] || 'Other';
+
+      // Parse confidence robustly
+      let confidence = 0;
+      try {
+        confidence = typeof mlResults.confidence === 'string' ? parseFloat(mlResults.confidence) : (mlResults.confidence || 0);
+      } catch (e) {
+        confidence = 0;
+      }
+      if (Number.isNaN(confidence)) confidence = 0;
+
+      const CONFIDENCE_THRESHOLD = 0.75;
+
+      // Keyword lists for fallback
+      const sanitationKeywords = ['garbage', 'garbage overflow', 'garbage_overflowing', 'dustbin', 'dust bin', 'trash', 'smell', 'odor', 'odour', 'overflow', 'dump'];
+      const roadKeywords = ['pothole', 'pot hole', 'manhole', 'man hole', 'hole', 'holes', 'vehicle', 'car', 'bus', 'truck', 'road', 'street', 'crack'];
+      const containsAny = (text, keywords) => keywords.some(k => text.includes(k));
+
+      // Determine evaluated category: apply confidence threshold and keyword fallback
+      let evaluatedCategory = 'Other';
+      if (confidence < CONFIDENCE_THRESHOLD) {
+        // low confidence: fallback to keywords
+        if (containsAny(desc, sanitationKeywords) || containsAny(filename, sanitationKeywords)) {
+          evaluatedCategory = 'Sanitation';
+        } else if (containsAny(desc, roadKeywords) || containsAny(filename, roadKeywords)) {
+          evaluatedCategory = 'Road Issues';
+        } else {
+          evaluatedCategory = 'Other';
+        }
+      } else {
+        // high confidence: trust mapped category
+        evaluatedCategory = mappedCategory;
+      }
+
+      // Keep existing strong override for pothole/road keywords
+      if (
+        filename.includes('pothole') || 
+        desc.includes('pothole') || 
+        desc.includes('pot hole') || 
+        desc.includes('road') || 
+        desc.includes('street damage')
+      ) {
+        evaluatedCategory = 'Road Issues';
+      }
+
+      // Return evaluatedCategory instead of raw ML category to the frontend
+      const resultsForClient = {
+        ...mlResults,
+        // override predictedCategory so frontend sees evaluated value
+        predictedCategory: evaluatedCategory,
+        evaluatedCategory,
+        evaluatedConfidence: confidence
+      };
+
       res.json({
         success: true,
-        results: mlResults,
+        results: resultsForClient,
         file: {
           originalName: req.file.originalname,
           size: req.file.size,
@@ -63,14 +136,14 @@ router.post('/analyze-image',
 
 
 // Department complaints (admin/staff)
-router.get('/department/:dept', authenticateToken, requireAdmin, complaintsController.getComplaintsByDepartment);
+router.get('/department/:dept', authenticateToken, complaintsController.getComplaintsByDepartment);
 
 router.get('/all-by-department', authenticateToken, requireAdmin, complaintsController.getAllComplaintsByDepartment);
 // Submit complaint (any authenticated user)
 router.post(
   '/',
   authenticateToken, // Only requires authentication, not admin role
-  upload.single('photo'),
+  upload.single('photo'), // Expect 'photo' field for the image file
   [
     body('description').trim().optional(),
     body('location').trim().notEmpty().withMessage('Location is required'),

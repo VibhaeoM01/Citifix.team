@@ -29,23 +29,41 @@ const Contact = () => {
     setSuccess('');
 
     try {
-      const response = await fetch('/api/contact', {
+      // Submit directly to Formspree - backend integration removed as requested
+      const response = await fetch('https://formspree.io/f/myzlyane', {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
+          'Accept': 'application/json'
         },
-        body: JSON.stringify(formData),
+        body: JSON.stringify({
+          name: formData.name,
+          email: formData.email,
+          subject: formData.subject,
+          message: formData.message,
+          _subject: formData.subject || 'Contact form submission',
+          _replyto: formData.email
+        })
       });
 
-      const data = await response.json();
+      let data = null;
+      try {
+        data = await response.json();
+      } catch {
+        // Some responses may be empty; ignore parse errors
+      }
 
       if (response.ok) {
-        setSuccess('Message sent successfully! We\'ll get back to you soon.');
+        setSuccess("Message sent successfully! We'll get back to you soon.");
         setFormData({ name: '', email: '', subject: '', message: '' });
       } else {
-        setError(data.message || 'Failed to send message');
+        // Formspree returns errors in different shapes
+        const errMsg = data?.error || data?.message || (data?.errors && data.errors.map(e => e.message).join(', ')) || 'Failed to send message via Formspree';
+        console.error('Formspree error response:', data);
+        setError(errMsg);
       }
-    } catch (err) {
+    } catch (error) {
+      console.error('Formspree submission error:', error);
       setError('An error occurred while sending the message');
     } finally {
       setLoading(false);

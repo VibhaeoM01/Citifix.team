@@ -172,43 +172,18 @@ const Login = () => {
               />
             </div>
 
-            <button
+            {/* <button
               type="submit"
               className="btn btn-primary"
               disabled={loading}
             >
               {loading ? 'Verifying...' : 'Verify OTP'}
-            </button>
+            </button> */}
           </form>
         )}
 
-        <div className={styles.authDivider}>
-          <span>OR</span>
-        </div>
-
-        <GoogleSignInButton mode="signin" />
-
-        <div className={styles.authActions}>
-          {!showOtp && (
-            <button
-              onClick={handleOtpRequest}
-              className="btn btn-secondary"
-              disabled={loading}
-            >
-              Login with OTP
-            </button>
-          )}
-          
-          {showOtp && (
-            <button
-              onClick={() => setShowOtp(false)}
-              className="btn btn-secondary"
-              disabled={loading}
-            >
-              Back to Password Login
-            </button>
-          )}
-        </div>
+      
+         
 
         <div className={styles.authFooter}>
           <p>
